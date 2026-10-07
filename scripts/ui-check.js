@@ -54,8 +54,21 @@ class CDP {
     this.ws = ws;
     this.id = 0;
     this.pending = new Map();
+    this.sessionId = null;   // 当前操作哪个标签页（见 useSession / openTab）
+    this.dialogHandler = null;
     ws.addEventListener('message', (ev) => {
       const msg = JSON.parse(ev.data);
+      // 没有 id 的是事件。confirm() 这种原生弹窗必须显式应答，
+      // 否则页面会一直停在那儿等用户点确定（无头浏览器里就是卡死）。
+      if (msg.method === 'Page.javascriptDialogOpening' && this.dialogHandler) {
+        const p = this.dialogHandler(msg.params);
+        if (p) p.catch(() => {});
+        return;
+      }
+      if (msg.method === 'Target.attachedToTarget' && this.attachWaiter) {
+        this.attachWaiter(msg.params);
+        return;
+      }
       if (msg.id && this.pending.has(msg.id)) {
         const { resolve, reject } = this.pending.get(msg.id);
         this.pending.delete(msg.id);
@@ -63,6 +76,11 @@ class CDP {
         else resolve(msg.result);
       }
     });
+  }
+
+  /** 注册原生弹窗的应答方式；传 null 恢复成「一律取消」 */
+  onDialog(handler) {
+    this.dialogHandler = handler;
   }
 
   static async connect(port) {
@@ -82,14 +100,26 @@ class CDP {
       ws.addEventListener('open', resolve, { once: true });
       ws.addEventListener('error', () => reject(new Error('CDP WebSocket 连接失败')), { once: true });
     });
-    return new CDP(ws);
+    const cdp = new CDP(ws);
+    // 主标签页走的是「页面级」WebSocket，命令里不能带 sessionId；
+    // openTab() 开的第二个标签页才需要 attach 拿到的 sessionId（实测过：
+    // 页面级连接带上 targetId 当 sessionId 会被回 "Session with given id not found"）
+    cdp.sessionId = null;
+    return cdp;
   }
 
   send(method, params) {
+    return this.sendTo(this.sessionId, method, params);
+  }
+
+  /** 指定会话（标签页）执行命令；sessionId 为 null 时是浏览器级命令 */
+  sendTo(sessionId, method, params) {
     const id = ++this.id;
     return new Promise((resolve, reject) => {
+      const msg = { id, method, params: params || {} };
+      if (sessionId) msg.sessionId = sessionId;
       this.pending.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify({ id, method, params: params || {} }));
+      this.ws.send(JSON.stringify(msg));
       setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);
@@ -97,6 +127,38 @@ class CDP {
         }
       }, 20000);
     });
+  }
+
+  useSession(sessionId) {
+    const prev = this.sessionId;
+    this.sessionId = sessionId;
+    return prev;
+  }
+
+  /**
+   * 再开一个标签页，等价于「现场第二台手机」。
+   * initJs 会在页面加载前注入 —— localStorage 必须在这一刻写好，
+   * 页面里第一行脚本就要读它（决定「我是谁」）。
+   */
+  async openTab(url, initJs) {
+    const res = await this.sendTo(null, 'Target.createTarget', { url: 'about:blank' });
+    const targetId = res.targetId;
+    // attachToTarget 可能同步返回 sessionId，也可能只推一个 attachedToTarget 事件，
+    // 两种都要接住（不同浏览器版本的取舍不一样）
+    let attached = null;
+    this.attachWaiter = (params) => { if (params.targetInfo.targetId === targetId) attached = params; };
+    const att = await this.sendTo(null, 'Target.attachToTarget', { targetId: targetId, flatten: true })
+      .catch(() => ({}));
+    this.attachWaiter = null;
+    const sessionId = att.sessionId || (attached && attached.sessionId);
+    if (!sessionId) throw new Error('没能挂上第二个标签页');
+
+    const prev = this.useSession(sessionId);
+    await this.sendTo(sessionId, 'Page.enable');
+    await this.sendTo(sessionId, 'Runtime.enable');
+    if (initJs) await this.sendTo(sessionId, 'Page.addScriptToEvaluateOnNewDocument', { source: initJs });
+    await this.sendTo(sessionId, 'Page.navigate', { url: url });
+    return { targetId: targetId, sessionId: sessionId, prev: prev };
   }
 
   /** 在页面里求值，异常直接抛出来（不然断言会拿到 undefined 装死） */
@@ -109,6 +171,24 @@ class CDP {
         || r.exceptionDetails.text) + '\n  表达式：' + expression);
     }
     return r.result.value;
+  }
+
+  /** 轮询等一个条件成立：页面是异步渲染的，固定 sleep 既慢又不可靠 */
+  async waitFor(expression, label, timeoutMs) {
+    const deadline = Date.now() + (timeoutMs || 8000);
+    for (;;) {
+      let v = false;
+      try { v = await this.js(expression); } catch (e) { v = false; }
+      if (v) return true;
+      if (Date.now() > deadline) throw new Error('等待超时：' + (label || expression));
+      await sleep(120);
+    }
+  }
+
+  /** 真出事的时候光看「超时」没用，把相关 DOM 和报错一起打出来 */
+  async dump(expr) {
+    try { return await this.js('JSON.stringify(' + expr + ')'); }
+    catch (e) { return '（快照也失败了：' + e.message + '）'; }
   }
 
   async shot(file, fullPage) {
@@ -198,7 +278,7 @@ async function main() {
       '--window-size=1440,1000', '--hide-scrollbars', 'about:blank'
     ], { stdio: ['ignore', 'ignore', 'ignore'] });
 
-    cdp = await CDP.connect(CDP_PORT);
+    const cdp = await CDP.connect(CDP_PORT);
     await cdp.send('Page.enable');
     await cdp.send('Runtime.enable');
 
@@ -206,10 +286,12 @@ async function main() {
     await cdp.send('Page.navigate', { url: BASE + '/#/card' });
     await sleep(2500);
 
-    // 先注入一个「像真人一样输入」的小工具：直接改 value 不会触发框架监听，必须补 input 事件
+    // 先注入一个「像真人一样输入」的小工具：直接改 value 不会触发框架监听，必须补 input 事件。
+    // input 和 textarea 的 value setter 在不同的原型上，取错了会报 Illegal invocation。
     await cdp.js(`window.__type = function (sel, val) {
       const el = document.querySelector(sel);
-      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const set = Object.getOwnPropertyDescriptor(proto, 'value').set;
       set.call(el, val);
       el.dispatchEvent(new Event('input', { bubbles: true }));
       return el.value;
@@ -336,11 +418,217 @@ async function main() {
     ok((await cdp.js(`document.querySelector('#history-count').textContent`)) !== '0 条',
       '配对历史记录了这一条：' + (await cdp.js(`document.querySelector('#history-count').textContent`)));
 
-    console.log('\nC. 大屏 + 窄屏');
+    /* ------------------------------------------------ C. 聊天室
+       匹配成功之后双方要落到聊天页 —— 这是本轮的改动重点，所以要点到底：
+       自动进房、认领身份、发消息、话题一键发送、第二台设备实时同步。 */
+    console.log('\nC. 聊天室（匹配成功后双方进来聊天）');
+    let chatShot = '';
+    const pairSel = '#chat-whoami optgroup[label="这一轮的两个人"] option';
+    await cdp.js(`location.hash = '#/match'; 'ok'`);
+    await sleep(500);
+    await cdp.js(`document.querySelector('#btn-match').click(); 'ok'`);
+    await cdp.waitFor(`location.hash.indexOf('#/chat/') === 0`, '匹配成功后自动跳到聊天页');
+    await cdp.waitFor(`document.querySelectorAll('${pairSel}').length === 2`, '聊天页认出这一轮的两个人');
+
+    // 主持人这台机器不一定在配对里（随机抽的），所以显式认领这一轮的第一位。
+    // 认领会往服务端写一次，UI 也要从「观战」切成「可以发言」，所以轮询等它落地。
+    const claimedName = await cdp.waitFor(`(function () {
+      var sel = document.querySelector('#chat-whoami');
+      if (!sel) return false;
+      var pairOpts = document.querySelectorAll('${pairSel}');
+      if (pairOpts.length !== 2) return false;
+      if (pairOpts.length) {
+        var mine = Array.prototype.slice.call(pairOpts).filter(function (o) { return o.selected; })[0];
+        if (!mine) {
+          var want = pairOpts[0].value;
+          sel.value = want;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          return false;
+        }
+      }
+      var chip = document.querySelector('#chat-topics .topic-chip');
+      return !!(chip && !chip.disabled && !document.querySelector('#chat-text').disabled);
+    })()`).then(
+      () => cdp.js(`(function () {
+        var sel = document.querySelector('#chat-whoami');
+        var o = Array.prototype.slice.call(sel.options).filter(function (x) { return x.selected; })[0];
+        return o ? o.textContent : '';
+      })()`),
+      async (e) => {
+        console.log('  调试快照：' + await cdp.dump(`{
+          selValue: (document.querySelector('#chat-whoami') || {}).value,
+          options: document.querySelectorAll('${pairSel}').length,
+          chips: document.querySelectorAll('#chat-topics .topic-chip').length,
+          chipDisabled: (document.querySelector('#chat-topics .topic-chip') || {}).disabled,
+          warn: document.querySelector('#chat-warn').textContent,
+          me: localStorage.getItem('hackathon.me.v1')
+        }`));
+        throw e;
+      });
+    await sleep(300);
+
+    const room = await cdp.js(`location.hash.replace('#/chat/', '')`);
+    ok(/^m_[\w-]+$/.test(room), '匹配成功后地址栏就是聊天室：' + room);
+    ok((await cdp.js(`document.querySelector('#view-chat').classList.contains('on')`)) === true,
+      '页面切到了聊天视图');
+    ok((await cdp.js(`document.querySelector('#tabs a[data-tab=chat]').classList.contains('on')`)) === true,
+      '顶部「聊天」标签处于选中态');
+
+    const sides = await cdp.js(`Array.from(document.querySelectorAll('${pairSel}')).map(o => o.value)`);
+    const sideNames = await cdp.js(`Array.from(document.querySelectorAll('${pairSel}')).map(o => o.textContent)`);
+    ok(sides.length === 2 && sides.every(Boolean), '「我是」里列出这一轮的两个人：' + JSON.stringify(sideNames));
+    const claimed = await cdp.js(`(function () {
+      var sel = document.querySelector('#chat-whoami');
+      var o = Array.prototype.slice.call(sel.options).filter(function (x) { return x.selected; })[0];
+      return o ? o.value : '';
+    })()`);
+    ok(sides.indexOf(claimed) >= 0, '当前身份就是这一轮的其中一位：' + claimedName);
+    ok((await cdp.js(`document.querySelector('#chat-warn').textContent`)) === '',
+      '认领之后不再是观战模式，可以直接发言');
+    const peerIdx = sides.indexOf(claimed) === 0 ? 1 : 0;
+    const peerName = sideNames[peerIdx];
+    const peerId = sides[peerIdx];
+    ok((await cdp.js(`document.querySelector('#chat-peer').textContent`)).indexOf(peerName) >= 0,
+      '右栏显示的是对家「' + peerName + '」的资料');
+    ok((await cdp.js(`document.querySelectorAll('#chat-topics .topic-chip').length`)) === 3,
+      '聊天室带着 3 条破冰话题（点一条就能直接发出去）');
+    ok((await cdp.js(`document.querySelector('#chat-msgs .chat-empty') !== null`)) === true,
+      '刚开出来的房间是空状态，给了「怎么开口」的提示');
+
+    // 空消息不允许发出去（发送按钮在没内容时是禁用的）
+    const cnt0 = await cdp.js(`document.querySelectorAll('#chat-msgs .msg').length`);
+    await cdp.js(`document.querySelector('#chat-send').click(); 'ok'`);
+    await sleep(600);
+    ok((await cdp.js(`document.querySelectorAll('#chat-msgs .msg').length`)) === cnt0,
+      '输入框是空的时点发送 → 什么都不发');
+
+    // 点破冰话题 = 直接把这句话发出去
+    const topic0 = await cdp.js(`document.querySelector('#chat-topics .topic-chip').dataset.topic`);
+    ok(typeof topic0 === 'string' && topic0.length > 6,
+      '破冰话题上带着可以一键发出去的正文：' + String(topic0).slice(0, 16) + '…');
+    await cdp.js(`document.querySelector('#chat-topics .topic-chip').click(); 'ok'`);
+    await cdp.waitFor(`document.querySelectorAll('#chat-msgs .msg.me').length >= 1`, '话题消息出现在气泡里')
+      .catch(async (e) => {
+        console.log('  调试快照：' + await cdp.dump(`{
+          me: localStorage.getItem('hackathon.me.v1'),
+          hash: location.hash,
+          msgs: document.querySelectorAll('#chat-msgs .msg').length,
+          meMsgs: document.querySelectorAll('#chat-msgs .msg.me').length,
+          hint: document.querySelector('#chat-hint').textContent,
+          warn: document.querySelector('#chat-warn').textContent,
+          errors: window.__hsErrors,
+          toast: document.querySelector('#toast').textContent
+        }`));
+        throw e;
+      });
+    ok((await cdp.js(`document.querySelector('#chat-msgs .msg.me .bubble .txt').textContent`)) === topic0,
+      '点破冰话题 → 那句话真的发出去了：' + topic0.slice(0, 16) + '…');
+    ok((await cdp.js(`document.querySelectorAll('#chat-msgs .msg.me .who-tag').length`)) >= 1,
+      '自己的消息带「我」的署名');
+
+    // 手打一条
+    await cdp.js(`window.__type('#chat-text', '我是主持人这台机器，先打个招呼'); 'ok'`);
+    await sleep(150);
+    ok((await cdp.js(`document.querySelector('#chat-send').disabled`)) === false,
+      '输入框有字之后发送按钮自己亮起来');
+    await cdp.js(`document.querySelector('#chat-send').click(); 'ok'`);
+    await cdp.waitFor(`document.querySelectorAll('#chat-msgs .msg.me').length >= 2`, '手打的消息也发出去了');
+    ok((await cdp.js(`document.querySelector('#chat-text').value`)) === '', '发完输入框自动清空');
+
+    /* ---- 第二台设备：新开一个标签页，用对家的身份进同一间房 ----
+       注意 identity 是按 JSON 存的（lsGet 会 JSON.parse），所以这里也必须写
+       JSON.stringify 之后的值，直接塞裸字符串会被当成坏数据、静默退回「没认领」。 */
+    const tab2 = await cdp.openTab(BASE + '/#/card',
+      "try { localStorage.setItem('hackathon.me.v1', " + JSON.stringify(JSON.stringify(peerId)) + "); } catch (e) {}");
+    const mainSession = tab2.prev;
+    try {
+      await sleep(2500);
+      cdp.useSession(tab2.sessionId);
+      await cdp.js(`window.__type = function (sel, val) {
+        const el = document.querySelector(sel);
+        const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, val);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        return el.value;
+      }; 'ok'`);
+      await cdp.js(`location.hash = '#/chat/${room}'; 'ok'`);
+      await cdp.waitFor(`document.querySelectorAll('#chat-msgs .msg').length >= 2`,
+        '第二台设备看到同一间房的聊天记录');
+      const peerSel = await cdp.js(`(function () {
+        var s = document.querySelector('#chat-whoami');
+        var o = Array.prototype.slice.call(s.options).filter(function (x) { return x.selected; })[0];
+        return o ? o.value : '';
+      })()`);
+      ok(peerSel === peerId, '第二台设备认领的是对家 ' + peerName + '（' + peerSel + '）');
+      ok((await cdp.js(`document.querySelectorAll('#chat-msgs .msg.peer').length`)) >= 2,
+        '在对面那台手机上，主持人发的消息显示在左边');
+
+      await cdp.js(`window.__type('#chat-text', '我是对家，收到你的话题了'); 'ok'`);
+      await cdp.js(`document.querySelector('#chat-send').click(); 'ok'`);
+      await sleep(1200);
+
+      cdp.useSession(mainSession);
+      await cdp.waitFor(`document.querySelectorAll('#chat-msgs .msg.peer').length >= 1`,
+        '主持人这台不刷新就收到对家的消息');
+      ok((await cdp.js(`document.querySelector('#chat-msgs .msg.peer .bubble .txt').textContent`))
+        .indexOf('我是对家') >= 0, '实时同步成立：第二台设备发的消息出现在第一台上');
+      ok((await cdp.js(`document.querySelector('#tabs a[data-tab=chat]').classList.contains('unread')`)) === false,
+        '人就在聊天页时不会误报未读红点');
+      ok((await cdp.js(`window.__hsErrors.length`)) === 0,
+        '整个聊天流程零 JS 报错', await cdp.js(`window.__hsErrors`));
+      chatShot = await cdp.shot('ui-04-chat.png', false);
+
+      // 结束后房间还能看，但不能再发言
+      cdp.onDialog((params) => cdp.send('Page.handleJavaScriptDialog', { accept: true }));
+      await cdp.js(`document.querySelector('#chat-finish').click(); 'ok'`);
+      await cdp.waitFor(`document.querySelector('#chat-text').disabled === true`, '结束后输入框被禁用');
+      cdp.onDialog(null);
+      ok((await cdp.js(`document.querySelectorAll('#chat-msgs .msg').length`)) >= 2,
+        '这一轮结束后聊天记录仍然留在页面上');
+
+      // 没有房间时的兜底：不能是空白页，要明确告诉人去哪儿开一轮。
+      // 直接清内存快照（不走「清空配对记录」那个带 confirm 的按钮，避免弹窗卡住无头浏览器）。
+      await cdp.js(`(function () {
+        var S = window.__hsStore;
+        S.chatId = '';
+        S.chatData = null;
+        if (S.state) S.state.pairs = [];
+        location.hash = '#/chat';
+        return 'ok';
+      })()`);
+      await cdp.waitFor(`document.querySelector('#chat-msgs .chat-empty') !== null`,
+        '没有进行中的配对时，聊天页给兜底提示');
+      ok((await cdp.js(`document.querySelector('#chat-msgs .chat-empty').textContent`)).indexOf('开始匹配') >= 0,
+        '空聊天页明确引导去「开始匹配」，而不是留一片空白');
+      ok((await cdp.js(`document.querySelector('#chat-text').disabled`)) === true,
+        '没有房间时输入框是禁用的（不会让人白打一段话）');
+    } finally {
+      cdp.onDialog(null);
+      try { await cdp.sendTo(null, 'Target.closeTarget', { targetId: tab2.targetId }); } catch (e) {}
+      cdp.useSession(mainSession);
+      await sleep(500);
+    }
+
+    console.log('\nD. 大屏 + 窄屏');
+    let screenShot = '';
     await cdp.js(`location.hash = '#/screen'; 'ok'`);
     await sleep(600);
     ok(/^\d\d:\d\d$/.test(await cdp.js(`document.querySelector('#screen-clock').textContent`)),
       '大屏总时钟正常：' + (await cdp.js(`document.querySelector('#screen-clock').textContent`)));
+    // 大屏被砍到只回答三个问题：第几轮、还有多久、手机输哪个地址
+    ok(/第 \d+ 轮/.test(await cdp.js(`document.querySelector('#screen-round').textContent`)),
+      '大屏显示第几轮：' + (await cdp.js(`document.querySelector('#screen-round').textContent`)));
+    const joinText = await cdp.js(`document.querySelector('#screen-join').textContent`);
+    ok(/\d+\.\d+\.\d+\.\d+:\d+/.test(joinText),
+      '大屏给出局域网加入地址：' + joinText.replace('想加入', '').replace('复制这条地址', '').trim());
+    ok((await cdp.js(`document.querySelectorAll('#view-screen .pair').length`)) === 0,
+      '大屏不再公布配对清单（谁和谁配对属于聊天室里的私事）');
+    ok((await cdp.js(`document.querySelectorAll('#view-screen #btn-match, #view-screen #btn-finish-all').length`)) === 0,
+      '大屏上没有「开一轮 / 结束全部」按钮（投影前不会误点）');
+    ok((await cdp.js(`window.__hsErrors.length`)) === 0,
+      '大屏页零 JS 报错', await cdp.js(`window.__hsErrors`));
+    screenShot = await cdp.shot('ui-05-screen.png', false);
+
     await cdp.send('Emulation.setDeviceMetricsOverride', {
       width: 390, height: 844, deviceScaleFactor: 2, mobile: true
     });
@@ -353,7 +641,7 @@ async function main() {
     await cdp.send('Emulation.clearDeviceMetricsOverride');
     await sleep(300);
 
-    console.log('\nD. 静态部署（没有服务端，模拟 GitHub Pages）');
+    console.log('\nE. 静态部署（没有服务端，模拟 GitHub Pages）');
     staticSrv = await startStaticServer(STATIC_PORT, path.join(__dirname, '..', 'public'));
     await cdp.send('Page.navigate', { url: STATIC_BASE + '/#/card' });
     await sleep(2500);
@@ -384,9 +672,41 @@ async function main() {
       '没有服务端也能在本地开出配对（纯前端跑匹配算法）');
     ok(/^\d\d:\d\d$/.test(await cdp.js(`document.querySelector('#pairs .pair .timer .num').textContent`)),
       '本地配对的倒计时也正常：' + (await cdp.js(`document.querySelector('#pairs .pair .timer .num').textContent`)));
+
+    // 离线模式的聊天室：没有服务端也得能进去说话（匹配成功自动跳转 → 认领身份 → 发消息）
+    await cdp.waitFor(`location.hash.indexOf('#/chat/') === 0`, '离线模式匹配后也自动进聊天页');
+    await cdp.waitFor(`(function () {
+      var sel = document.querySelector('#chat-whoami');
+      if (!sel || document.querySelectorAll('${pairSel}').length !== 2) return false;
+      var opts = document.querySelectorAll('${pairSel}');
+      var mine = Array.prototype.slice.call(opts).filter(function (o) { return o.selected; })[0];
+      if (!mine) {
+        sel.value = opts[0].value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        return false;
+      }
+      var chip = document.querySelector('#chat-topics .topic-chip');
+      return !!(chip && !chip.disabled && !document.querySelector('#chat-text').disabled);
+    })()`, '离线模式认领身份后可以发言');
+
+    // 静态页是整页导航过的，之前注入的小工具没了，重新装一遍
+    await cdp.js(`window.__type = function (sel, val) {
+      const el = document.querySelector(sel);
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, val);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return el.value;
+    }; 'ok'`);
+    await cdp.js(`window.__type('#chat-text', '没有服务端也能聊'); 'ok'`);
+    await cdp.js(`document.querySelector('#chat-send').click(); 'ok'`);
+    await cdp.waitFor(`document.querySelectorAll('#chat-msgs .msg.me').length >= 1`, '离线模式的消息发得出去');
+    ok((await cdp.js(`document.querySelectorAll('#chat-msgs .msg.me').length`)) >= 1,
+      '静态托管（单机模式）下聊天照样能用，数据存在本机');
+    ok((await cdp.js(`window.__hsErrors.length`)) === 0,
+      '离线聊天零 JS 报错', await cdp.js(`window.__hsErrors`));
     const staticShot = await cdp.shot('ui-03-static.png', true);
 
-    console.log('\nE. 截图留存');
+    console.log('\nF. 截图留存');
     await cdp.send('Page.navigate', { url: BASE + '/#/card' });
     await sleep(2000);
     const f1 = await cdp.shot('ui-01-card.png', true);
@@ -396,6 +716,8 @@ async function main() {
     console.log('  · ' + f1);
     console.log('  · ' + f2);
     console.log('  · ' + staticShot);
+    if (chatShot) console.log('  · ' + chatShot);
+    if (screenShot) console.log('  · ' + screenShot);
   } finally {
     if (cdp) cdp.close();
     if (browser) { browser.kill(); }

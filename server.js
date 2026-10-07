@@ -38,6 +38,11 @@ const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const PORT = Number(process.env.PORT || 8788);
 const HOST = process.env.HOST || '0.0.0.0';
 const MAX_BODY = 64 * 1024;
+// 聊天消息：单条长度上限、每对上限、以及对外的条数/时间窗。
+// 消息是要被 SSE 广播出去的，不封顶的话一次推送会越滚越大。
+const MAX_MSG_LEN = 500;
+const MAX_MSG_PER_PAIR = 300;
+const CHAT_KEEP_MS = 12 * 60 * 60 * 1000;   // 活动结束第二天再打开，昨天的聊天记录就不留了
 // node server.js --open（或 OPEN=1）：起好之后自动打开浏览器，给双击启动的 .bat 用
 const OPEN_BROWSER = process.argv.indexOf('--open') >= 0 || process.env.OPEN === '1';
 
@@ -56,11 +61,36 @@ const DEFAULT_SETTINGS = {
 let state = {
   participants: [],
   pairs: [],
+  messages: [],
   byeId: null,
   round: 1,
   lastMatchAt: null,
   settings: Object.assign({}, DEFAULT_SETTINGS)
 };
+
+/**
+ * 丢掉没用的聊天消息，防止 state.json 无限长：
+ *   1. 配对记录已经被删掉的孤儿消息（「清空配对记录」之后就是这种）
+ *   2. 超过保留窗口的老消息
+ * 每对再按 MAX_MSG_PER_PAIR 截断，顺序保持「早 → 晚」。
+ */
+function pruneMessages() {
+  const pairIds = new Set(state.pairs.map(p => p.id));
+  const floor = Date.now() - CHAT_KEEP_MS;
+  state.messages = state.messages.filter(m =>
+    m && pairIds.has(m.pairId) && Number(m.at) >= floor);
+
+  const byPair = {};
+  state.messages.forEach(m => {
+    (byPair[m.pairId] = byPair[m.pairId] || []).push(m);
+  });
+  const kept = [];
+  state.pairs.forEach(p => {
+    const list = byPair[p.id];
+    if (list) kept.push.apply(kept, list.slice(-MAX_MSG_PER_PAIR));
+  });
+  state.messages = kept;
+}
 
 function loadState() {
   try {
@@ -69,11 +99,16 @@ function loadState() {
     const parsed = JSON.parse(raw);
     state.participants = Array.isArray(parsed.participants) ? parsed.participants : [];
     state.pairs = Array.isArray(parsed.pairs) ? parsed.pairs : [];
+    state.messages = Array.isArray(parsed.messages) ? parsed.messages : [];
     state.byeId = parsed.byeId || null;
     state.round = Number(parsed.round) || 1;
     state.lastMatchAt = parsed.lastMatchAt || null;
     state.settings = Object.assign({}, DEFAULT_SETTINGS, parsed.settings || {});
-    console.log('[data] 已载入 ' + state.participants.length + ' 位参与者 / ' + state.pairs.length + ' 条配对记录');
+    const before = state.messages.length;
+    if (before) pruneMessages();
+    console.log('[data] 已载入 ' + state.participants.length + ' 位参与者 / ' +
+      state.pairs.length + ' 条配对记录 / ' + state.messages.length +
+      ' 条聊天消息' + (before > state.messages.length ? '（清理了 ' + (before - state.messages.length) + ' 条过期消息）' : ''));
   } catch (e) {
     // 文件坏了不能让服务起不来：备份一份再空跑
     console.warn('[data] state.json 解析失败，已忽略：' + e.message);
@@ -103,6 +138,63 @@ function history() {
   return state.pairs.map(p => ({ a: p.aId, b: p.bId }));
 }
 
+/* ------------------------------------------------------------ 聊天小工具 */
+
+function messagesOf(pairId) {
+  return state.messages.filter(m => m.pairId === pairId);
+}
+
+function touchPairChat(pair) {
+  pair.msgCount = messagesOf(pair.id).length;
+  pair.lastMsgAt = state.messages.reduce((acc, m) => (m.pairId === pair.id ? m.at : acc), 0);
+}
+
+/**
+ * 谁读到了哪里：按时间戳记在配对上（不是每条消息一个已读标记）。
+ * 只记有值的那些，省得每次落盘都多写两个没意义的 0。
+ */
+function markRead(pair, pid, at) {
+  if (pair.aId !== pid && pair.bId !== pid) return;
+  if (!pair.readsAt) pair.readsAt = {};
+  pair.readsAt[pid] = Math.max(Number(pair.readsAt[pid]) || 0, Number(at) || Date.now());
+}
+
+function unreadOf(pair, pid) {
+  const since = (pair.readsAt && Number(pair.readsAt[pid])) || 0;
+  return state.messages.filter(m => m.pairId === pair.id && m.from !== pid && Number(m.at) > since).length;
+}
+
+/** 对外推送用的精简聊天摘要：只带条数和最后一条，不带全部消息 */
+function chatMeta(pair, level) {
+  if (!pair.msgCount) return null;
+  const last = state.messages.filter(m => m.pairId === pair.id).pop();
+  const out = { count: pair.msgCount, at: pair.lastMsgAt, last: last ? last.text.slice(0, 60) : '' };
+  if (level === 'full') out.reads = pair.readsAt || {};
+  return out;
+}
+
+/* 某个人当前进行中的配对——手机据此自动进入对应的聊天室 */
+function activePairIdFor(pid) {
+  if (!pid) return null;
+  const p = state.pairs.find(x =>
+    x.status === 'active' && (x.aId === pid || x.bId === pid));
+  return p ? p.id : null;
+}
+
+function pairPayload(pair) {
+  return {
+    pair: pair,
+    people: {
+      a: state.participants.find(x => x.id === pair.aId) || null,
+      b: state.participants.find(x => x.id === pair.bId) || null
+    },
+    messages: messagesOf(pair.id).map(m => ({
+      id: m.id, from: m.from, text: m.text, at: m.at, atIso: new Date(m.at).toISOString()
+    })),
+    now: Date.now()
+  };
+}
+
 function snapshot() {
   // 只把还活着的配对设为 active，其余按状态返回，前端据此渲染
   const now = Date.now();
@@ -119,18 +211,26 @@ function snapshot() {
     lastMatchAt: state.lastMatchAt,
     settings: state.settings,
     participants: state.participants,
+    // 每台手机靠这个知道「我在跟谁聊、有几条没看」——服务端算好，前端不用自己数
+    presence: state.participants.map(p => ({
+      id: p.id,
+      activePairId: activePairIdFor(p.id),
+      unread: active.reduce((n, pair) => n + unreadOf(pair, p.id), 0)
+    })),
     // 大屏要显示「手机该打开哪个地址」：主持人多半是用 localhost 打开的，
     // 直接把局域网 IP 一起给前端，省得现场临时查 ipconfig
     net: { port: activePort, addresses: lanAddresses() },
     pairs: visible.map(p => Object.assign({}, p, {
-      remainingMs: p.status === 'active' ? Math.max(0, p.endsAt - now) : 0
+      remainingMs: p.status === 'active' ? Math.max(0, p.endsAt - now) : 0,
+      chat: chatMeta(p, p.status === 'active' ? 'full' : 'lean')
     })),
     stats: {
       people: state.participants.length,
       rounds: state.round,
       activePairs: active.length,
       totalPairs: all.length,
-      matchedPeople: new Set(all.flatMap(p => [p.aId, p.bId])).size
+      matchedPeople: new Set(all.flatMap(p => [p.aId, p.bId])).size,
+      messages: state.messages.length
     }
   };
 }
@@ -342,15 +442,55 @@ function pairAction(id, action, minutes) {
   return { pair };
 }
 
+/* ------------------------------------------------------------------ 聊天 */
+
+const EMPTY_TEXT = /^[\s\u200b\u200c\u200d\ufeff]*$/;
+
+/**
+ * 往配对里发一条消息，并更新配对上的条数/最后消息时间。
+ * 调用方必须保证 fromId 是这条配对的 a 或 b —— 服务端只按 pid 存，
+ * 所以「我是谁」这个判断只能在路由层做（见 messageFrom）。
+ */
+function recordMessage(pair, fromId, text) {
+  const msg = {
+    id: newId('c'),
+    pairId: pair.id,
+    from: fromId,
+    text: text,
+    at: Date.now()
+  };
+  state.messages.push(msg);
+  const mine = messagesOf(pair.id);
+  if (mine.length > MAX_MSG_PER_PAIR) {
+    const drop = new Set(mine.slice(0, mine.length - MAX_MSG_PER_PAIR).map(m => m.id));
+    state.messages = state.messages.filter(m => !drop.has(m.id));
+  }
+  touchPairChat(pair);
+  // 自己发的当然算已读，否则自己的消息会给自己加未读
+  markRead(pair, fromId, msg.at);
+  return msg;
+}
+
+function sendMessage(pair, fromId, rawText) {
+  const text = String(rawText == null ? '' : rawText).replace(/\r\n?/g, '\n').trim().slice(0, MAX_MSG_LEN);
+  if (EMPTY_TEXT.test(text)) return { error: '消息不能为空' };
+  const msg = recordMessage(pair, fromId, text);
+  saveState(); pushState();
+  return { message: { id: msg.id, from: msg.from, text: msg.text, at: msg.at }, pair: pair };
+}
+
 function reset(what) {
   if (what === 'all') {
     state.participants = [];
     state.pairs = [];
+    state.messages = [];   // 人都清空了，聊天记录也没有意义
     state.byeId = null;
     state.lastMatchAt = null;
   } else {
-    // 「清空配对记录」按字面执行：连进行中的一起清掉（想保留就先「结束全部」）
+    // 「清空配对记录」按字面执行：连进行中的一起清掉（想保留就先「结束全部」）。
+    // 配对没了聊天室也就没了，所以对应的消息一起删 —— 留着就是孤儿数据。
     state.pairs = [];
+    state.messages = [];
     state.byeId = null;
   }
   state.round = 1;
@@ -418,17 +558,55 @@ const server = http.createServer(async (req, res) => {
     if ((m = urlPath.match(/^\/api\/participants\/([\w-]+)$/)) && method === 'DELETE') {
       const before = state.participants.length;
       state.participants = state.participants.filter(p => p.id !== m[1]);
-      state.pairs = state.pairs.filter(p => p.aId !== m[1] && p.bId !== m[1]);
+      const gone = new Set(state.pairs
+        .filter(p => p.aId === m[1] || p.bId === m[1])
+        .map(p => p.id));
+      state.pairs = state.pairs.filter(p => !gone.has(p.id));
+      // 人走了，配对他的聊天室也一起撤掉，不然消息会变成没有归属的孤儿
+      state.messages = state.messages.filter(x => !gone.has(x.pairId));
       if (state.byeId === m[1]) state.byeId = null;
       if (state.participants.length === before) return sendJson(res, 404, { error: '找不到这个人' });
       saveState(); pushState();
       return sendJson(res, 200, { ok: true });
     }
 
+    // 单个配对 + 它的完整聊天记录。SSE 快照里刻意不带全量消息，
+    // 所以聊天室打开时单独拉一次，之后靠推送增量跟进。
+    if ((m = urlPath.match(/^\/api\/pairs\/([\w-]+)$/)) && method === 'GET') {
+      const pair = state.pairs.find(p => p.id === m[1]);
+      if (!pair) return sendJson(res, 404, { error: '找不到这条配对' });
+      return sendJson(res, 200, pairPayload(pair));
+    }
+
     if (method === 'POST' && urlPath === '/api/match') {
       const r = createMatch(body);
       if (r.error) return sendJson(res, 409, { error: r.error });
       return sendJson(res, 200, r);
+    }
+
+    if ((m = urlPath.match(/^\/api\/pairs\/([\w-]+)\/messages$/)) && method === 'POST') {
+      const pair = state.pairs.find(p => p.id === m[1]);
+      if (!pair) return sendJson(res, 404, { error: '找不到这条配对' });
+      const sender = String(body.from || '');
+      // 只认这条配对的两个人。否则任何人都能冒充别人往任意聊天室灌消息。
+      if (sender !== pair.aId && sender !== pair.bId) {
+        return sendJson(res, 403, { error: '你不在这条配对里（先选「我是谁」）' });
+      }
+      const r = sendMessage(pair, sender, body.text);
+      if (r.error) return sendJson(res, 400, { error: r.error });
+      return sendJson(res, 201, r);
+    }
+
+    if ((m = urlPath.match(/^\/api\/pairs\/([\w-]+)\/read$/)) && method === 'POST') {
+      const pair = state.pairs.find(p => p.id === m[1]);
+      if (!pair) return sendJson(res, 404, { error: '找不到这条配对' });
+      const reader = String(body.from || '');
+      if (reader !== pair.aId && reader !== pair.bId) {
+        return sendJson(res, 403, { error: '你不在这条配对里' });
+      }
+      markRead(pair, reader, Date.now());
+      saveState(); pushState();
+      return sendJson(res, 200, { ok: true, unread: unreadOf(pair, reader) });
     }
 
     if ((m = urlPath.match(/^\/api\/pairs\/([\w-]+)$/)) && method === 'POST') {

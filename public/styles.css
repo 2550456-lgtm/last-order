@@ -99,6 +99,21 @@ body {
 .tabs a:hover { color: var(--text); background: var(--panel-2); }
 .tabs a.on { color: #fff; background: linear-gradient(135deg, rgba(99, 102, 241, .9), rgba(168, 85, 247, .8)); }
 
+/* 聊天标签上的未读点：有没看的消息才亮，位置压在「聊天」两个字右上角 */
+.tabs a[data-tab=chat] { position: relative; }
+.tabs a[data-tab=chat] .dot { display: none; }
+.tabs a[data-tab=chat].unread .dot {
+  display: block;
+  position: absolute;
+  top: 5px;
+  right: 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, .22);
+}
+
 .conn {
   display: flex;
   align-items: center;
@@ -587,32 +602,81 @@ button.ghost { background: transparent; color: var(--muted); }
 }
 .dim b { color: #cbd5e1; }
 
-/* 大屏 */
-.pairs.big { grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); gap: 20px; }
-.pairs.big .pair { padding: 20px; max-width: none; }
-.pairs.big .score { width: 66px; height: 66px; }
-.pairs.big .score b { font-size: 19px; }
-.pairs.big .score small { font-size: 10px; }
-.pairs.big .timer .num { font-size: 46px; }
-.pairs.big .vs .side strong { font-size: 20px; }
-.pairs.big .topics li { font-size: 14.5px; }
-.pairs.big .avatar { width: 62px; height: 62px; font-size: 20px; }
+/* 大屏：只服务「第几轮 / 还有多久 / 手机输哪个地址」这三个问题。
+   所以字要大、元素要少，投影上从最后一排也要看得清。 */
+#view-screen {
+  display: flex;
+  flex-direction: column;
+  /* 内容少，投影时居中放，别让下半屏空着。flex-start → center 有点小位移，
+     但大屏是「切过去就挂着」的用法，这点动画没人会看到 */
+  min-height: calc(100vh - 190px);
+  justify-content: center;
+  padding-bottom: 5vh;
+}
 
 .screen-bar {
-  display: flex; align-items: center; gap: 18px;
-  padding: 16px 20px; margin-bottom: 18px;
-  border: 1px solid var(--line); border-radius: var(--radius);
-  background: linear-gradient(120deg, rgba(99, 102, 241, .16), rgba(168, 85, 247, .1));
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 20px 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: linear-gradient(120deg, rgba(99, 102, 241, .18), rgba(168, 85, 247, .1));
   flex-wrap: wrap;
 }
-.screen-round { font-size: 18px; font-weight: 800; }
-.screen-sub { font-size: 12.5px; color: var(--muted); }
+
+.screen-status { min-width: 0; }
+.screen-round { font-size: clamp(20px, 2.6vw, 30px); font-weight: 800; }
+.screen-sub { font-size: clamp(13px, 1.4vw, 16px); color: var(--muted); }
+.screen-sub b { color: #a5b4fc; font-size: 1.25em; }
+
 .screen-clock {
-  font-family: var(--mono); font-size: clamp(38px, 7vw, 66px); font-weight: 800;
-  letter-spacing: 2px; font-variant-numeric: tabular-nums; margin-left: auto;
+  font-family: var(--mono);
+  font-size: clamp(52px, 11vw, 132px);
+  font-weight: 800;
+  letter-spacing: 3px;
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+  line-height: 1;
 }
-.screen-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.screen-foot { margin-top: 18px; font-size: 12.5px; color: var(--muted-2); display: flex; gap: 14px; flex-wrap: wrap; }
+/* 60 秒内整块表变红：投影上隔着十几米也看得出来 */
+.screen-bar.urgent .screen-clock { color: #fca5a5; }
+.screen-bar.urgent { border-color: rgba(239, 68, 68, .45); }
+
+.screen-full { padding: 12px 18px; font-size: 15px; }
+
+/* 加入地址：投影上最该被看见的一行，所以字号直接跟着视口走 */
+.screen-join {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+  padding: 18px 24px;
+  border: 1px solid rgba(99, 102, 241, .45);
+  border-radius: var(--radius);
+  background: rgba(99, 102, 241, .1);
+}
+.screen-join-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: clamp(14px, 1.5vw, 18px);
+  font-weight: 700;
+  color: var(--muted);
+}
+.screen-join-label .ic { width: 20px; height: 20px; }
+.screen-url {
+  font-family: var(--mono);
+  font-size: clamp(22px, 4vw, 46px);
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #c7d2fe;
+  word-break: break-all;
+}
+.screen-copy { font-size: 14px; padding: 10px 14px; }
+
+.screen-foot { margin-top: 18px; font-size: 13px; color: var(--muted-2); display: flex; gap: 14px; flex-wrap: wrap; }
 
 /* 历史 */
 .history { margin-top: 26px; border-top: 1px solid var(--line); padding-top: 14px; }
@@ -644,12 +708,208 @@ button.ghost { background: transparent; color: var(--muted); }
 
 .empty { color: var(--muted-2); font-size: 13px; }
 
+/* ============================================================
+   聊天室（匹配成功之后双方进来的地方）
+   ============================================================ */
+.grid-chat { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+
+/* 顶部「我是谁」条：认不出身份就发不了言，所以放在最显眼的地方 */
+.chat-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.chat-status .av .avatar,
+.chat-status .avatar { width: 34px; height: 34px; }
+.chat-status label { margin: 0; }
+.whoami-mini { width: auto; min-width: 150px; max-width: 260px; padding: 7px 11px; font-size: 13px; }
+.chat-warn { font-size: 12px; color: #fcd34d; }
+
+.chat-panel { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+
+/* ---- 头部：双方 + 状态 + 倒计时（倒计时由 app.js 的 tick() 驱动） ---- */
+.chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(120deg, rgba(99, 102, 241, .12), rgba(168, 85, 247, .07));
+}
+
+.chat-who { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.chat-who-txt { display: flex; flex-direction: column; line-height: 1.3; min-width: 0; }
+
+/* 两个名字并排一行（「何嘉 和 我」），窄屏放不下时整体换行，
+   不给单个字留出被压成两行的机会 */
+.chat-names { display: flex; align-items: baseline; gap: 5px; flex-wrap: wrap; }
+.chat-names strong { font-size: 14.5px; white-space: nowrap; }
+.chat-names em { font-style: normal; font-size: 11px; color: var(--muted-2); }
+.chat-who-txt .chat-sub { font-size: 11.5px; color: var(--muted); }
+
+.chat-head-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chat-timer { margin: 0; min-width: 92px; }
+.chat-timer .num { font-size: 24px; }
+.chat-timer .bar { margin-top: 4px; }
+
+/* ---- 消息列表 ---- */
+.chat-msgs {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 16px;
+  height: min(52vh, 460px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.chat-empty {
+  margin: auto;
+  text-align: center;
+  color: var(--muted);
+  max-width: 42ch;
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+}
+.chat-empty .ic { width: 30px; height: 30px; color: var(--muted-2); }
+.chat-empty strong { font-size: 14px; color: var(--text); }
+.chat-empty p { margin: 0; font-size: 12.5px; line-height: 1.7; }
+
+.chat-more { text-align: center; font-size: 11.5px; color: var(--muted-2); margin: 0 0 4px; }
+
+.msg { display: flex; flex-direction: column; align-items: flex-start; max-width: 78%; }
+.msg.me { align-self: flex-end; align-items: flex-end; }
+.msg .who-tag { font-size: 10.5px; color: var(--muted-2); margin: 0 4px 3px; }
+
+.msg .bubble {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(9, 13, 26, .6);
+  max-width: 100%;
+}
+.msg .bubble .txt { font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.msg .bubble .ts { font-size: 10px; color: var(--muted-2); font-variant-numeric: tabular-nums; flex: none; }
+
+.msg.me .bubble {
+  background: linear-gradient(135deg, rgba(99, 102, 241, .92), rgba(168, 85, 247, .82));
+  border-color: transparent;
+  color: #fff;
+}
+.msg.me .bubble .ts { color: rgba(255, 255, 255, .72); }
+.msg.who .bubble { background: rgba(148, 163, 184, .14); }
+
+/* ---- 底部：破冰话题 + 输入 ---- */
+.chat-foot { padding: 12px 16px 14px; border-top: 1px solid var(--line); background: rgba(9, 13, 26, .35); }
+
+.topics.quick { margin: 0 0 10px; gap: 6px; }
+.topics-label { display: inline-flex; align-items: center; gap: 5px; margin-right: 4px; }
+.topics-label .ic { width: 13px; height: 13px; }
+
+.topic-chip {
+  display: block;
+  text-align: left;
+  font-size: 11.5px;
+  line-height: 1.45;
+  font-weight: 500;
+  color: #cbd5e1;
+  background: rgba(9, 13, 26, .5);
+  border: 1px dashed var(--line-2);
+  border-radius: 10px;
+  padding: 6px 10px;
+  white-space: normal;
+}
+.topic-chip:hover { color: var(--text); border-style: solid; }
+
+.composer { display: flex; gap: 9px; align-items: flex-end; }
+
+.composer textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 46px;
+  max-height: 140px;
+  resize: none;
+  padding: 11px 13px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: rgba(9, 13, 26, .72);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  outline: none;
+  transition: .16s;
+}
+.composer textarea:focus { border-color: rgba(99, 102, 241, .75); box-shadow: 0 0 0 3px rgba(99, 102, 241, .16); }
+.composer textarea::placeholder { color: var(--muted-2); }
+.composer textarea:disabled { opacity: .5; }
+.composer button { min-height: 46px; }
+
+/* ---- 侧栏：对家的资料 ---- */
+.chat-side { display: grid; gap: 14px; }
+.chat-side-actions { margin-top: 0; }
+
+.peer-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.peer-head strong { display: block; font-size: 16px; }
+.peer-head .tag { font-size: 12px; color: var(--muted-2); }
+
+.peer-block { margin-bottom: 12px; }
+.peer-block > label {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: .3px;
+  margin-bottom: 6px;
+}
+.peer-block .chips { margin-top: 0; }
+
+.copy-contact {
+  width: 100%;
+  justify-content: flex-start;
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(9, 13, 26, .6);
+}
+
+/* 回到匹配页的链接做成按钮的样子，视觉上和旁边两个按钮齐平 */
+.link-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line-2);
+  padding: 10px 15px;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  transition: .16s;
+}
+.link-btn:hover { background: rgba(255, 255, 255, .08); color: var(--text); }
+
 /* 屏幕小于 980px 时收成单列；现场很多人是手机填表 */
 @media (max-width: 980px) {
-  .grid-2, .grid-side { grid-template-columns: 1fr; }
+  .grid-2, .grid-side, .grid-chat { grid-template-columns: 1fr; }
   .sticky { position: static; }
-  .pairs.big { grid-template-columns: 1fr; }
   .screen-clock { margin-left: 0; width: 100%; }
+  .chat-msgs { height: min(46vh, 380px); }
 }
 
 @media (max-width: 560px) {
@@ -659,6 +919,13 @@ button.ghost { background: transparent; color: var(--muted); }
   .brand-text em { display: none; }
   .vs { flex-direction: column; }
   .vs .link { transform: rotate(90deg); }
+  /* 手机是全屏聊天的主战场：消息区再高一点，输入框别被挤没 */
+  .chat-msgs { height: min(56vh, 420px); padding: 12px; }
+  .msg { max-width: 88%; }
+  .chat-head { padding: 12px; }
+  .chat-timer .num { font-size: 20px; }
+  .composer { flex-wrap: wrap; }
+  .composer button { flex: 1 1 100%; }
 }
 
 @media print { .topbar, .foot, .actions { display: none; } }

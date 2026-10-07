@@ -339,15 +339,89 @@ async function testEndToEnd() {
     ok(reset.status === 200, '清空配对记录');
     st = await api('GET', '/api/state');
     ok(st.data.pairs.length === 0 && st.data.participants.length === 5, '配对（含进行中的）清了、人还在');
+    ok(st.data.stats.messages === 0, '清空配对时聊天记录一起清掉（不留孤儿消息）');
 
     const matchAgain = await api('POST', '/api/match', { mode: 'random', count: 1 });
     ok(matchAgain.status === 200, '清空后能重新开一轮（round 从 1 重数）');
     ok(matchAgain.data.round === 2, '轮次重新从 1 开始计数：现在第 ' + matchAgain.data.round + ' 轮');
 
+    // ---------------------------------------------------------- 聊天室
+    section('C. 聊天室（匹配成功后双方进来的地方）');
+
+    const chatPair = matchAgain.data.pairs[0];
+    const chatA = chatPair.aId, chatB = chatPair.bId;
+    const someoneElse = st.data.participants.map((p) => p.id).find((id) => id !== chatA && id !== chatB);
+
+    const p2 = await api('GET', '/api/pairs/' + chatPair.id);
+    ok(p2.status === 200 && p2.data.pair.id === chatPair.id, 'GET /api/pairs/:id 拿到这一轮的配对');
+    ok(p2.data.people.a && p2.data.people.b, '带上两个人的资料（前端不用再翻匹配池）');
+    ok(Array.isArray(p2.data.messages) && p2.data.messages.length === 0, '刚开的房间没有消息');
+    ok(p2.data.pair.aId === chatA, '房间归属和配对一致');
+    const missing = await api('GET', '/api/pairs/m_nope');
+    ok(missing.status === 404, '不存在的房间返回 404');
+
+    const sent1 = await api('POST', '/api/pairs/' + chatPair.id + '/messages', { from: chatA, text: '  你好，我是先开口的那个  ' });
+    ok(sent1.status === 201 && sent1.data.message.from === chatA, 'A 能往房里发消息');
+    ok(sent1.data.message.text === '你好，我是先开口的那个', '消息首尾空白被清掉：' + JSON.stringify(sent1.data.message.text));
+    await new Promise((r) => setTimeout(r, 5));
+    await api('POST', '/api/pairs/' + chatPair.id + '/messages', { from: chatB, text: '收到，我正好会你说的那个技能' });
+    await new Promise((r) => setTimeout(r, 5));
+    await api('POST', '/api/pairs/' + chatPair.id + '/messages', { from: chatA, text: '那我们现在就对一下' });
+
+    const p3 = await api('GET', '/api/pairs/' + chatPair.id);
+    ok(p3.data.messages.length === 3, '三条消息都存下来了：' + p3.data.messages.length);
+    ok(p3.data.messages[0].from === chatA && p3.data.messages[2].from === chatA, '顺序是「早 → 晚」（聊天记录必须按时间读）');
+    ok(p3.data.messages.every((m) => m.text && m.at > 0), '每条消息都带正文和时间戳');
+
+    const empty = await api('POST', '/api/pairs/' + chatPair.id + '/messages', { from: chatA, text: '   ' });
+    ok(empty.status === 400 && /不能为空/.test(empty.data.error), '空消息被拒：' + empty.data.error);
+    const intruder = await api('POST', '/api/pairs/' + chatPair.id + '/messages', { from: someoneElse, text: '我不是这一轮的' });
+    ok(intruder.status === 403, '不在这一轮的人发不了消息（403，不是静默丢弃）');
+    const noFrom = await api('POST', '/api/pairs/' + chatPair.id + '/messages', { text: '没写我是谁' });
+    ok(noFrom.status === 403, '没认领身份也发不了');
+
+    // 消息正文原样进出：前端靠 esc() 转义，服务端不做「过滤成空」这种伪安全
+    const tricky = '<img src=x onerror=alert(1)> & "引号"';
+    const t2 = await api('POST', '/api/pairs/' + chatPair.id + '/messages', { from: chatB, text: tricky });
+    ok(t2.status === 201 && t2.data.message.text === tricky, '带尖括号的消息原样存下来（转义交给渲染层）');
+
+    const long = await api('POST', '/api/pairs/' + chatPair.id + '/messages', { from: chatA, text: 'x'.repeat(900) });
+    ok(long.data.message.text.length === 500, '超长消息截断到 500 字：' + long.data.message.text.length);
+
+    // 未读：最后一条是 A 发的，所以没看到的是 B；
+    // 自己发出去的消息绝不能给自己加未读（A 发了 3 条，未读必须是 0）
+    st = await api('GET', '/api/state');
+    const chatPairLive = st.data.pairs.find((p) => p.id === chatPair.id);
+    ok(chatPairLive.chat && chatPairLive.chat.count === 5, '快照里带上了这一间的消息条数：' +
+      (chatPairLive.chat && chatPairLive.chat.count));
+    ok(chatPairLive.chat.last.length <= 60, '快照只带最后一条的摘要（不带全量消息，SSE 不会被撑胖）');
+    const presA = st.data.presence.find((x) => x.id === chatA);
+    const presB = st.data.presence.find((x) => x.id === chatB);
+    ok(presA && presA.activePairId === chatPair.id, 'presence 告诉每台手机「我在哪一间」');
+    ok(presA.unread === 0, '自己发的消息不给自己加未读：' + presA.unread);
+    ok(presB.unread === 1, 'B 还没看的那一条算未读：' + presB.unread);
+
+    const read = await api('POST', '/api/pairs/' + chatPair.id + '/read', { from: chatA });
+    ok(read.status === 200 && read.data.unread === 0, 'A 打开房间后未读清零');
+    const readBad = await api('POST', '/api/pairs/' + chatPair.id + '/read', { from: someoneElse });
+    ok(readBad.status === 403, '不在这一轮的人不能替别人标已读');
+
+    // 结束后聊天记录还在（复盘用），但人走了就跟着走
+    await api('POST', '/api/pairs/' + chatPair.id, { action: 'finish' });
+    const p4 = await api('GET', '/api/pairs/' + chatPair.id);
+    ok(p4.data.pair.status === 'done' && p4.data.messages.length === 5, '这一轮结束后记录仍然可读');
+
+    const gone = await api('DELETE', '/api/participants/' + chatB);
+    ok(gone.status === 200, '把 B 移出匹配池');
+    const p5 = await api('GET', '/api/pairs/' + chatPair.id);
+    ok(p5.status === 404, '人走了，配对他的聊天室一起消失（不留孤儿消息）');
+    st = await api('GET', '/api/state');
+    ok(st.data.stats.messages === 0, '孤儿消息被清干净：现在 ' + st.data.stats.messages + ' 条');
+
     const del = await api('DELETE', '/api/participants/' + meId);
     ok(del.status === 200, '删除参与者');
     st = await api('GET', '/api/state');
-    ok(st.data.participants.length === 4, '删完剩 4 人');
+    ok(st.data.participants.length === 3, '删完剩 3 人');
 
     const nf = await api('GET', '/api/nope');
     ok(nf.status === 404, '未知接口返回 404');

@@ -123,6 +123,16 @@
         <circle cx="8.6" cy="9" r="1.7" />
         <path d="M21 15.5 16.2 10.7 6.5 20.4" />
       </symbol>
+      <symbol id="i-chat" viewBox="0 0 24 24">
+        <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9.8 9.8 0 0 1-2.6-.4L4 21l1.4-4.1A8.3 8.3 0 0 1 3 11.5a8.4 8.4 0 0 1 9-8.4 8.4 8.4 0 0 1 9 8.4z" />
+      </symbol>
+      <symbol id="i-send" viewBox="0 0 24 24">
+        <path d="M21.5 3 2.5 10.4l7.2 2.9 2.9 7.2z" />
+        <path d="M21.5 3 9.7 13.3" />
+      </symbol>
+      <symbol id="i-back" viewBox="0 0 24 24">
+        <path d="M15 5 8 12l7 7" />
+      </symbol>
     </defs>
   </svg>
 
@@ -134,6 +144,7 @@
     <nav class="tabs" id="tabs">
       <a href="#/card" data-tab="card"><svg class="ic"><use href="#i-card" /></svg>组队名片</a>
       <a href="#/match" data-tab="match"><svg class="ic"><use href="#i-shuffle" /></svg>破冰匹配</a>
+      <a href="#/chat" data-tab="chat"><svg class="ic"><use href="#i-chat" /></svg>聊天<span class="dot"></span></a>
       <a href="#/screen" data-tab="screen"><svg class="ic"><use href="#i-screen" /></svg>大屏</a>
     </nav>
     <div class="conn" id="conn" title="与服务端的连接状态"><i></i><span>连接中…</span></div>
@@ -321,27 +332,74 @@
       </details>
     </section>
 
+    <!-- ============================ 聊天（匹配成功后双方进入） ============================ -->
+    <section class="view" id="view-chat">
+      <div class="hero">
+        <h1>你们被抽到一起了</h1>
+        <p>匹配成功的那一刻，这一轮的两个人的手机会自动落到这个聊天室：左边是对话，右边是对方的资料和破冰话题。</p>
+      </div>
+
+      <div class="chat-status">
+        <span class="av" id="chat-me-av"></span>
+        <label for="chat-whoami" class="mini">我是</label>
+        <select id="chat-whoami" class="whoami-mini"></select>
+        <span class="chat-warn" id="chat-warn"></span>
+      </div>
+
+      <div class="grid-chat">
+        <div class="panel chat-panel">
+          <div class="chat-head" id="chat-head"></div>
+          <div class="chat-msgs" id="chat-msgs"></div>
+          <div class="chat-foot">
+            <div class="topics quick" id="chat-topics"></div>
+            <div class="composer">
+              <textarea id="chat-text" rows="1" maxlength="500" placeholder="说点什么…（Enter 发送 / Shift+Enter 换行）"></textarea>
+              <button class="primary" id="chat-send" disabled><svg class="ic">
+                  <use href="#i-send" />
+                </svg>发送</button>
+            </div>
+            <p class="hint" id="chat-hint"></p>
+          </div>
+        </div>
+
+        <div class="panel chat-side">
+          <h2><svg class="ic">
+              <use href="#i-users" />
+            </svg>这一轮的对家</h2>
+          <div id="chat-peer"></div>
+          <div class="actions col chat-side-actions">
+            <button id="chat-finish"><svg class="ic">
+                <use href="#i-check" />
+              </svg>结束这一轮</button>
+            <button id="chat-extend"><svg class="ic">
+                <use href="#i-clock" />
+              </svg>延长 2 分钟</button>
+            <a href="#/match" class="link-btn"><svg class="ic">
+                <use href="#i-back" />
+              </svg>回到破冰匹配</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ============================ 大屏 ============================ -->
+    <!-- ============================ 大屏 ============================
+         刻意只做三件事：第几轮、还有多久、手机该打开哪个地址。
+         配对清单和「开一轮 / 结束全部」都留给「破冰匹配」页 ——
+         投影前谁都能点到按钮，而且配完对两个人就各自进聊天室了，
+         没必要把「谁和谁配对」公之于众。 -->
     <section class="view" id="view-screen">
       <div class="screen-bar">
-        <div>
+        <div class="screen-status">
           <div class="screen-round" id="screen-round">第 1 轮</div>
           <div class="screen-sub" id="screen-sub">等待开始</div>
         </div>
         <div class="screen-clock" id="screen-clock">--:--</div>
-        <div class="screen-actions">
-          <button class="primary" id="btn-screen-match"><svg class="ic">
-              <use href="#i-play" />
-            </svg>开一轮</button>
-          <button id="btn-screen-finish"><svg class="ic">
-              <use href="#i-check" />
-            </svg>结束全部</button>
-          <button id="btn-fullscreen"><svg class="ic">
-              <use href="#i-expand" />
-            </svg>全屏</button>
-        </div>
+        <button class="screen-full" id="btn-fullscreen"><svg class="ic">
+            <use href="#i-expand" />
+          </svg>全屏</button>
       </div>
-      <div class="pairs big" id="screen-pairs"></div>
+      <div class="screen-join" id="screen-join"></div>
       <div class="screen-foot" id="screen-foot"></div>
     </section>
 
@@ -387,6 +445,7 @@
   <script src="./lib/match.js"></script>
   <script src="./lib/demo-people.js"></script>
   <script src="./card.js"></script>
+  <script src="./chat.js"></script>
   <script src="./app.js"></script>
 </body>
 

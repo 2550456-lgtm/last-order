@@ -39,6 +39,7 @@ jobs:
         run: |
           node --check public/app.js
           node --check public/card.js
+          node --check public/chat.js
           node --check public/lib/match.js
           node --check public/lib/demo-people.js
           node --check server.js
