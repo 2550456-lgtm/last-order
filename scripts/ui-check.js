@@ -735,9 +735,16 @@ async function main() {
   process.exit(failed ? 1 : 0);
 }
 
-main().catch((e) => {
-  console.error('\n中断：' + e.message);
-  try { fs.rmSync(DATA_DIR, { recursive: true, force: true }); } catch (x) {}
-  try { fs.rmSync(UDD, { recursive: true, force: true }); } catch (x) {}
-  process.exit(1);
-});
+// 只有直接 `node scripts/ui-check.js` 时才跑主流程。
+// 加这道判断是为了让别的地方（比如验收已发布的 Pages 站点）能 require 这个文件
+// 复用上面的 CDP 封装，而不会顺带把整套本地验收又跑一遍。
+if (require.main === module) {
+  main().catch((e) => {
+    console.error('\n中断：' + e.message);
+    try { fs.rmSync(DATA_DIR, { recursive: true, force: true }); } catch (x) {}
+    try { fs.rmSync(UDD, { recursive: true, force: true }); } catch (x) {}
+    process.exit(1);
+  });
+}
+
+module.exports = { CDP };
