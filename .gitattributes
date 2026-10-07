@@ -1,0 +1,7 @@
+# 统一换行符：仓库里存 LF，检出时按各人系统处理，避免 Windows 上一堆 CRLF 警告
+* text=auto eol=lf
+
+# 图片是二进制，别做任何换行转换
+*.png binary
+*.jpg binary
+*.ico binary

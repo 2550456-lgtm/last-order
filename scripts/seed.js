@@ -6,7 +6,7 @@
  * 用真实的 HTTP 接口写入，和手机上手动填表走的是同一条路径。
  *
  *   node scripts/seed.js                      # 默认 http://127.0.0.1:8788
- *   BASE=http://192.168.2.178:8788 node scripts/seed.js
+ *   BASE=http://<你的局域网IP>:8788 node scripts/seed.js
  *
  * 清空：页面上的「清空配对记录」，或直接删掉 data/state.json 后重启。
  */

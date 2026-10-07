@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node test/smoke.js"
+    "test": "node test/smoke.js",
+    "ui-check": "node scripts/ui-check.js",
+    "seed": "node scripts/seed.js"
   },
   "keywords": ["hackathon", "icebreaker", "team-forming", "zero-dependency"],
   "engines": {

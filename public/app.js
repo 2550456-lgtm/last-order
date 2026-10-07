@@ -190,13 +190,17 @@
   /* --------------------------------------------------------------- 表单渲染 */
 
   function chipHtml(item, type) {
+    // 技能存的是 {name, level} 对象，兴趣/我在找存的是纯字符串 —— 两种都要能渲染。
+    // 之前这里一律取 item.name，纯字符串就取到 undefined，标签会渲染成只有 × 的空胶囊。
+    const name = (item && typeof item === 'object') ? item.name : item;
     if (type === 'skill') {
-      return '<span class="chip" data-level="' + esc(item.level) + '" data-name="' + esc(item.name) + '">' +
-        esc(item.name) + '<span class="lv">' + esc(M.levelLabel(item.level)) + '</span>' +
+      const level = (item && item.level) || 'know';
+      return '<span class="chip" data-level="' + esc(level) + '" data-name="' + esc(name) + '">' +
+        esc(name) + '<span class="lv">' + esc(M.levelLabel(level)) + '</span>' +
         '<span class="x">×</span></span>';
     }
-    return '<span class="chip ' + (type === 'look' ? 'look' : 'plain') + '" data-name="' + esc(item.name) + '">' +
-      esc(item.name) + '<span class="x">×</span></span>';
+    return '<span class="chip ' + (type === 'look' ? 'look' : 'plain') + '" data-name="' + esc(name) + '">' +
+      esc(name) + '<span class="x">×</span></span>';
   }
 
   function renderChips() {
