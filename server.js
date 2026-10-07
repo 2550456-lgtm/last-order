@@ -21,6 +21,16 @@ const crypto = require('crypto');
 const M = require('./public/lib/match.js');
 
 const ROOT = __dirname;
+
+// Windows 的传统 cmd 窗口默认代码页是 936(GBK)，而 Node 往终端写的是 UTF-8，
+// 结果启动横幅里的中文全变乱码 —— 偏偏「手机该打开哪个地址」就印在那几行里。
+// 有终端时自动切到 65001。重定向到文件时不切（文件本来就该是 UTF-8）。
+if (process.platform === 'win32' && process.stdout.isTTY) {
+  try {
+    require('child_process').execSync('chcp 65001', { stdio: 'ignore' });
+  } catch (_) { /* 切不了不影响服务本身 */ }
+}
+
 const PUBLIC_DIR = path.join(ROOT, 'public');
 // 数据目录可用环境变量覆盖：方便一台机器上开多个「房间」，也方便测试跑在临时目录
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT, 'data');
@@ -28,6 +38,11 @@ const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const PORT = Number(process.env.PORT || 8788);
 const HOST = process.env.HOST || '0.0.0.0';
 const MAX_BODY = 64 * 1024;
+// node server.js --open（或 OPEN=1）：起好之后自动打开浏览器，给双击启动的 .bat 用
+const OPEN_BROWSER = process.argv.indexOf('--open') >= 0 || process.env.OPEN === '1';
+
+// 真正在用的端口。8788 被占用时会自动往后找，所以内部一律用这个而不是常量 PORT。
+let activePort = PORT;
 
 const DEFAULT_SETTINGS = {
   event: '黑客松现场',
@@ -106,7 +121,7 @@ function snapshot() {
     participants: state.participants,
     // 大屏要显示「手机该打开哪个地址」：主持人多半是用 localhost 打开的，
     // 直接把局域网 IP 一起给前端，省得现场临时查 ipconfig
-    net: { port: PORT, addresses: lanAddresses() },
+    net: { port: activePort, addresses: lanAddresses() },
     pairs: visible.map(p => Object.assign({}, p, {
       remainingMs: p.status === 'active' ? Math.max(0, p.endsAt - now) : 0
     })),
@@ -212,7 +227,7 @@ function serveStatic(req, res, urlPath) {
     if (ext === '.html') {
       fs.readFile(target, 'utf8', (e2, html) => {
         if (e2) { res.writeHead(500).end('500'); return; }
-        const host = req.headers.host || ('localhost:' + PORT);
+        const host = req.headers.host || ('localhost:' + activePort);
         const proto = String(req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim();
         const origin = proto + '://' + host;
         const body = Buffer.from(html.split('__ORIGIN__').join(origin), 'utf8');
@@ -454,20 +469,80 @@ function lanAddresses() {
   return out;
 }
 
-loadState();
-server.listen(PORT, HOST, () => {
+/* ------------------------------------------------------------------ 启动 */
+
+function openBrowser(url) {
+  const cmd = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
+    : process.platform === 'darwin' ? ['open', [url]]
+      : ['xdg-open', [url]];
+  try {
+    const { spawn } = require('child_process');
+    spawn(cmd[0], cmd[1], { detached: true, stdio: 'ignore' }).unref();
+  } catch (_) { /* 打不开就算了，地址已经印在下面了 */ }
+}
+
+function banner() {
   const lines = [
     '',
     '  Hackathon 组队雷达 已启动',
     '  ─────────────────────────────────────────────',
-    '  本机访问 : http://localhost:' + PORT + '/',
-    ...lanAddresses().map(ip => '  手机访问 : http://' + ip + ':' + PORT + '/   (同一 WiFi 下)'),
-    '  大屏模式 : http://localhost:' + PORT + '/#/screen',
+    '  本机访问 : http://localhost:' + activePort + '/',
+    ...lanAddresses().map(ip => '  手机访问 : http://' + ip + ':' + activePort + '/   (同一 WiFi 下)'),
+    '  大屏模式 : http://localhost:' + activePort + '/#/screen',
     '  数据文件 : ' + STATE_FILE,
+    '',
+    '  按 Ctrl+C 停止。数据会自动存盘。',
     ''
   ];
   console.log(lines.join('\n'));
-});
+}
+
+/**
+ * 监听端口，被占用就自动往后找。
+ * 现场经常出现「上一个窗口没关掉」或者别的程序占了 8788，
+ * 原来这种情况会直接抛 EADDRINUSE 一长串栈，看起来像程序坏了。
+ */
+function listen(port, attemptsLeft) {
+  attemptsLeft = attemptsLeft === undefined ? 5 : attemptsLeft;
+
+  // 每次尝试前先清掉上一轮挂上的回调。
+  // 踩过的坑：EADDRINUSE 时 'listening' 从来没触发过，它的回调会一直留着，
+  // 等下一次监听成功时两个回调一起执行 —— 表现为横幅打印两遍，
+  // 而且第一遍里的端口号是错的（旧闭包里的 port）。
+  server.removeAllListeners('listening');
+  server.removeAllListeners('error');
+
+  server.once('error', (err) => {
+    if (err.code === 'EADDRINUSE' && attemptsLeft > 1) {
+      console.log('  端口 ' + port + ' 已被占用，改用 ' + (port + 1) + ' …');
+      activePort = port + 1;
+      setTimeout(() => listen(port + 1, attemptsLeft - 1), 120);
+      return;
+    }
+    if (err.code === 'EADDRINUSE') {
+      console.error('\n  端口 ' + port + ' 起不来：连续试了 5 个端口都被占用。');
+      console.error('  关掉多余的窗口，或者指定一个别的端口：PORT=9000 node server.js\n');
+    } else if (err.code === 'EACCES') {
+      console.error('\n  没有权限监听端口 ' + port + '。换一个 1024 以上的端口试试：PORT=9000 node server.js\n');
+    } else {
+      console.error('\n  启动失败：' + err.message + '\n');
+    }
+    process.exit(1);
+  });
+
+  server.once('listening', () => {
+    activePort = port;
+    banner();
+    if (OPEN_BROWSER) openBrowser('http://localhost:' + activePort + '/');
+    // 起好之后换个常驻的错误处理：宁可打日志也不要让服务在活动中途直接崩掉
+    server.on('error', (err) => console.error('  [服务端错误] ' + err.message));
+  });
+
+  server.listen(port, HOST);
+}
+
+loadState();
+listen(PORT);
 
 process.on('SIGINT', () => {
   console.log('\n正在退出，写入数据…');

@@ -96,18 +96,30 @@
 
 ### 运行方式
 
+**最快：双击启动**
+
+| 系统 | 做法 |
+| --- | --- |
+| Windows | 双击 **`start.bat`** —— 自动检查 Node 版本、启动服务、打开浏览器；缺 Node 会给出明确提示和替代方案 |
+| macOS / Linux | `chmod +x start.sh && ./start.sh` |
+
+**命令行**
+
 ```bash
-node server.js          # 或 npm start
-# 本机访问 : http://localhost:8788/
-# 手机访问 : http://<你的局域网IP>:8788/     (同一 WiFi)
-# 大屏模式 : http://localhost:8788/#/screen
+node server.js            # 最稳，推荐
+node server.js --open     # 顺便自动打开浏览器
+npm.cmd start             # Windows 上如果用 PowerShell，注意下面这条
+PORT=9000 node server.js  # 指定端口（8788 被占用时会自动往后找 5 个）
+DATA_DIR=/tmp/room1 node server.js   # 一台机器开多个「房间」
 ```
 
-- 端口：`PORT=9000 node server.js`
-- 数据目录：`DATA_DIR=/tmp/room1 node server.js`（一台机器开多个「房间」）
-- 演示数据：`npm run seed` 塞 8 个带头像的假参与者，一打开就能试匹配
-- 接口自测：`npm test` —— 77 项断言，算法单测 + 真起服务端的端到端流程
-- **真实浏览器 UI 验收**：`npm run ui-check` —— 自己起一个隔离服务端，再用 CDP 驱动无头 Edge/Chrome 把关键交互点一遍（点头像、加标签、存名片、开匹配、看倒计时是不是真的在走、窄屏有没有溢出），26 项断言 + 截图留档
+> ⚠️ **Windows 上不要用 `npm start`**：PowerShell 默认执行策略会拦下 `npm.ps1`，报「因为在此系统上禁止运行脚本」。用 `node server.js`，或者写 `npm.cmd start`。（这是实测踩到的，不是理论问题。）
+
+**其它命令**
+
+- 演示数据：`npm.cmd run seed` 塞 8 个带头像的假参与者，一打开就能试匹配
+- 接口自测：`npm.cmd test` —— 77 项断言，算法单测 + 真起服务端的端到端流程
+- **真实浏览器 UI 验收**：`npm.cmd run ui-check` —— 自己起一个隔离服务端，再用 CDP 驱动无头 Edge/Chrome 把关键交互点一遍（点头像、加标签、存名片、开匹配、看倒计时是不是真的在走、窄屏有没有溢出），26 项断言 + 截图留档
 
 **两个降级开关**（现场保命用）：
 
@@ -248,6 +260,18 @@ node server.js          # 或 npm start
 - 10 张头像原图各 1000×1000（单张最大 128KB），统一转成 256×256 后单张 3–10KB，整站图片总量约 60KB。
 - 分享预览图 `public/img/og.png` 是**用无头浏览器截图 `scripts/og-source.html` 生成的**，文案改了重新跑一次脚本即可，不需要设计工具。
 
+### 7）启动环节本身也会出问题（现场最常见的一类故障）
+
+代码写得对，但「跑不起来」往往发生在敲命令这一步。实测踩到并处理掉的：
+
+| 故障 | 原来会怎样 | 现在怎么处理 |
+| --- | --- | --- |
+| 8788 被占用（上一个窗口没关） | 直接抛 `EADDRINUSE` 一长串栈，看起来像程序坏了 | 自动往后试 5 个端口，并在横幅里打印**实际**地址 |
+| 中文日志在某些终端是乱码 | 启动横幅里「手机该访问哪个地址」正好在乱码那几行 | Windows 传统 cmd 默认代码页是 936，而 Node 输出 UTF-8；检测到终端时服务端自动 `chcp 65001` |
+| 用 `npm start` 报「禁止运行脚本」 | PowerShell 执行策略拦下 `npm.ps1` | 文档把 `node server.js` 作为首选，并给出 `npm.cmd` 的写法 |
+| 电脑上没装 Node | 双击 `server.js` 被当成脚本文件打开，或者窗口一闪而过 | `start.bat` 明确提示去 nodejs.org 装 LTS，并给出「传静态托管 + `?offline=1`」的免安装替代方案 |
+| 双击 `.bat` 之后乱码/报一堆「不是内部或外部命令」 | —— | `start.bat` 保持**纯 ASCII**：cmd 是按字节偏移读批处理的，文件里 `chcp` 切代码页会让它读错位、把中文行当命令执行。中文提示统一交给 Node 输出 |
+
 ---
 
 ## 5. 换作我怎么做（继续迭代）
@@ -295,6 +319,8 @@ node server.js          # 或 npm start
 
 ```
 .
+├── start.bat                 # Windows 双击启动（纯 ASCII，含 Node 检查与友好提示）
+├── start.sh                  # macOS / Linux 启动脚本
 ├── server.js                 # 零依赖服务端：静态托管 + JSON API + SSE + 落盘 + og 地址注入
 ├── public/
 │   ├── index.html            # 三个视图 + 内联 SVG 图标集 + 全局错误捕获
