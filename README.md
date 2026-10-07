@@ -124,6 +124,9 @@ node server.js          # 或 npm start
    名片生成、下载 PNG、分享链接、本地匹配全部可用，只是**没有跨设备同步**。
    静态托管时没有服务端做替换，需要手动把 `public/index.html` 里的 `__ORIGIN__` 改成你的域名（否则分享预览图不显示）。
 
+   仓库里已经带了 [`.github/workflows/pages.yml`](.github/workflows/pages.yml)：推上去之后在
+   **Settings → Pages → Source 选 "GitHub Actions"**，就会自动把 `public/` 发布成一个公开链接（等于白拿一个部署地址）。
+
 ### 数据 / 接口设计
 
 **数据模型**（`data/state.json`）

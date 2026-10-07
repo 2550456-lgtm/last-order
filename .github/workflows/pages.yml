@@ -1,0 +1,56 @@
+# 把 public/ 作为纯静态站点发到 GitHub Pages。
+#
+# 为什么只发 public/：整个前端没有构建步骤，public/ 里的东西浏览器直接就能跑。
+# 用 ?offline=1 或直接访问时，名片生成、下载 PNG、分享链接、本地匹配全都可用，
+# 只是没有跨设备同步（那需要跑 server.js）。
+#
+# 启用方式：仓库 Settings → Pages → Build and deployment → Source 选 "GitHub Actions"，
+# 然后往 main 推一次（或在 Actions 页手动 Run workflow）。
+#
+# 注意：静态托管没有服务端来替换 index.html 里的 __ORIGIN__ 占位符，
+# 想让分享预览图生效，需要把 public/index.html 里的 __ORIGIN__ 改成你的 Pages 地址。
+
+name: Deploy static site to Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 静态自检（不依赖任何 npm 包）
+        run: |
+          node --check public/app.js
+          node --check public/card.js
+          node --check public/lib/match.js
+          node --check server.js
+          test -f public/index.html
+          test -f public/img/og.png
+          test -f public/avatars/avatar-10.png
+          echo "前端文件齐全，语法检查通过"
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
