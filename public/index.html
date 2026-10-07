@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b1020">
+  <meta name="description" content="黑客松现场组队名片生成器 + 破冰匹配器">
+  <title>HackMatch · 组队雷达</title>
+  <script>
+    /* 现场最怕的是投影上白屏还找不到原因：任何脚本报错都直接摊在页面上，
+       并且保留原始信息（文件名:行号），方便当场排查。 */
+    window.__hsErrors = [];
+    window.addEventListener('error', function (e) {
+      var msg = (e && e.message) ? e.message : '资源加载失败';
+      var where = e && e.filename ? (' @ ' + e.filename.split('/').pop() + ':' + e.lineno) : '';
+      window.__hsErrors.push(msg + where);
+      var box = document.getElementById('js-error');
+      if (!box) {
+        box = document.createElement('div');
+        box.id = 'js-error';
+        box.style.cssText = 'position:fixed;left:10px;right:10px;bottom:10px;z-index:999;' +
+          'background:#7f1d1d;color:#fff;padding:11px 14px;border-radius:10px;' +
+          'font:12.5px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap';
+        (document.body || document.documentElement).appendChild(box);
+      }
+      box.textContent = '页面脚本出错（刷新可重试）：' + window.__hsErrors.join(' | ');
+    });
+  </script>
+  <link rel="stylesheet" href="./styles.css">
+  <link rel="icon"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236366f1'/%3E%3Ctext x='16' y='22' font-size='16' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'%3EHM%3C/text%3E%3C/svg%3E">
+</head>
+
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/card">
+      <span class="brand-mark">HM</span>
+      <span class="brand-text"><strong>HackMatch</strong><em>组队雷达</em></span>
+    </a>
+    <nav class="tabs" id="tabs">
+      <a href="#/card" data-tab="card">组队名片</a>
+      <a href="#/match" data-tab="match">破冰匹配</a>
+      <a href="#/screen" data-tab="screen">大屏</a>
+    </nav>
+    <div class="conn" id="conn" title="与服务端的连接状态"><i></i><span>连接中…</span></div>
+  </header>
+
+  <main>
+    <!-- ============================ 组队名片 ============================ -->
+    <section class="view" id="view-card">
+      <div class="hero">
+        <h1>先把名片做出来，再去找人</h1>
+        <p>填技能和兴趣 → 生成一张能直接发群里的卡片 → 一键进匹配池。全程 30 秒，手机上也能填。</p>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <h2>1 · 填资料</h2>
+
+          <div class="field">
+            <label for="f-name">昵称 <b>*</b></label>
+            <input id="f-name" maxlength="24" placeholder="怎么称呼你？" autocomplete="off">
+          </div>
+
+          <div class="field">
+            <label for="f-tagline">一句话介绍</label>
+            <input id="f-tagline" maxlength="60" placeholder="例：想把语音助手塞进小硬件里" autocomplete="off">
+          </div>
+
+          <div class="field">
+            <label>技能 <b>*</b><span class="mini">回车添加；点标签切换 想学 / 会用 / 熟练</span></label>
+            <div class="taginput">
+              <input id="f-skill" placeholder="例：Python" maxlength="20" autocomplete="off">
+              <div class="seg" id="seg-skill">
+                <button type="button" data-level="learn">想学</button>
+                <button type="button" data-level="know" class="on">会用</button>
+                <button type="button" data-level="pro">熟练</button>
+              </div>
+              <button type="button" class="btn-add" id="add-skill">添加</button>
+            </div>
+            <div class="presets" id="preset-skills"></div>
+            <div class="chips" id="chips-skills"></div>
+          </div>
+
+          <div class="field">
+            <label>兴趣 <b>*</b><span class="mini">聊天话题就从这里长出来</span></label>
+            <div class="taginput">
+              <input id="f-interest" placeholder="例：独立游戏" maxlength="16" autocomplete="off">
+              <button type="button" class="btn-add" id="add-interest">添加</button>
+            </div>
+            <div class="presets" id="preset-interests"></div>
+            <div class="chips" id="chips-interests"></div>
+          </div>
+
+          <div class="field">
+            <label>我在找这样的队友<span class="mini">写角色或技能，例：UI 设计 / 硬件</span></label>
+            <div class="taginput">
+              <input id="f-looking" placeholder="例：UI 设计" maxlength="16" autocomplete="off">
+              <button type="button" class="btn-add" id="add-looking">添加</button>
+            </div>
+            <div class="presets" id="preset-looking"></div>
+            <div class="chips" id="chips-looking"></div>
+          </div>
+
+          <div class="field">
+            <label for="f-contact">联系方式<span class="mini">会印在卡片上，方便别人找你</span></label>
+            <input id="f-contact" maxlength="40" placeholder="微信号 / Telegram / 手机号" autocomplete="off">
+          </div>
+
+          <div class="actions">
+            <button class="primary" id="btn-save">保存并加入匹配池</button>
+            <button id="btn-download">下载卡片 PNG</button>
+            <button id="btn-share">复制分享链接</button>
+            <button class="ghost" id="btn-clear">清空</button>
+          </div>
+          <p class="hint" id="save-state"></p>
+        </div>
+
+        <div class="panel sticky">
+          <h2>2 · 名片预览</h2>
+          <div class="canvas-wrap">
+            <canvas id="card-canvas" aria-label="组队名片预览"></canvas>
+          </div>
+          <p class="hint">预览用的就是导出图片的同一份绘制代码，所见即所得。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ 破冰匹配 ============================ -->
+    <section class="view" id="view-match">
+      <div class="hero">
+        <h1>随机抽两个人，聊 5 分钟</h1>
+        <p>三种抽签方式，配上按资料生成的破冰话题和倒计时。聊完一键结束，再开下一轮。</p>
+      </div>
+
+      <div class="grid-side">
+        <div class="panel">
+          <h2>开一轮 <span class="pill" id="pool-count">匹配池 0 人</span></h2>
+
+          <div class="field">
+            <label>抽签方式</label>
+            <div class="mode-list" id="mode-list"></div>
+          </div>
+
+          <div class="row">
+            <div class="field">
+              <label>每组时长</label>
+              <div class="seg wide" id="seg-duration">
+                <button type="button" data-sec="180">3 分钟</button>
+                <button type="button" data-sec="300" class="on">5 分钟</button>
+                <button type="button" data-sec="600">10 分钟</button>
+              </div>
+            </div>
+            <div class="field narrow">
+              <label>同时开几组</label>
+              <input type="number" id="f-count" min="1" max="12" value="1">
+            </div>
+          </div>
+
+          <div class="actions">
+            <button class="primary big" id="btn-match">开始匹配</button>
+            <button id="btn-finish-all">结束全部</button>
+            <button class="ghost" id="btn-clear-pairs">清空配对记录</button>
+          </div>
+          <p class="hint" id="match-msg"></p>
+        </div>
+
+        <div class="panel">
+          <h2>谁和我最搭 <span class="pill" id="mymatch-pill">未选择</span></h2>
+          <div class="row">
+            <div class="field grow">
+              <label for="whoami">我是池子里的</label>
+              <select id="whoami"></select>
+            </div>
+            <button id="btn-find" class="self-end">看看谁和我最搭</button>
+          </div>
+          <div class="mymatch" id="my-matches">
+            <p class="hint">选一个名字，看看按技能互补 + 兴趣重合算出来的前 3 名。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel pool-panel">
+        <h2>匹配池里的人 <span class="pill">登记过的都会出现在这里</span></h2>
+        <div class="pool" id="pool-list"></div>
+      </div>
+
+      <div class="pairs-head">
+        <h2>进行中的配对 <span class="pill" id="active-count">0 组</span></h2>
+      </div>
+      <div class="pairs" id="pairs"></div>
+
+      <details class="history">
+        <summary>配对历史 <span id="history-count">0 条</span></summary>
+        <div id="history-list"></div>
+      </details>
+    </section>
+
+    <!-- ============================ 大屏 ============================ -->
+    <section class="view" id="view-screen">
+      <div class="screen-bar">
+        <div>
+          <div class="screen-round" id="screen-round">第 1 轮</div>
+          <div class="screen-sub" id="screen-sub">等待开始</div>
+        </div>
+        <div class="screen-clock" id="screen-clock">--:--</div>
+        <div class="screen-actions">
+          <button class="primary" id="btn-screen-match">开一轮</button>
+          <button id="btn-screen-finish">结束全部</button>
+          <button id="btn-fullscreen">全屏</button>
+        </div>
+      </div>
+      <div class="pairs big" id="screen-pairs"></div>
+      <div class="screen-foot" id="screen-foot"></div>
+    </section>
+
+    <!-- ========================== 别人分享的名片 ========================== -->
+    <section class="view" id="view-shared">
+      <div class="hero">
+        <h1 id="shared-title">有人给你发了一张组队名片</h1>
+        <p>这是 TA 的资料。你可以直接找 TA 聊，也可以生成自己的一张进匹配池。</p>
+      </div>
+      <div class="grid-2">
+        <div class="panel">
+          <div class="canvas-wrap"><canvas id="shared-canvas"></canvas></div>
+        </div>
+        <div class="panel">
+          <h2>下一步</h2>
+          <div class="actions col">
+            <button class="primary" id="btn-shared-contact">查看联系方式</button>
+            <button id="btn-shared-copy">复制这张卡片的链接</button>
+            <button id="btn-shared-mine">我也做一张名片</button>
+          </div>
+          <p class="hint">分享链接把资料编码在 URL 里，没有服务端也能打开。</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>HackMatch · 组队雷达</span>
+    <span class="dot"></span>
+    <span id="foot-mode">本地模式</span>
+    <span class="dot"></span>
+    <span>零依赖 · 单文件服务端 · 数据留在本机</span>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="./lib/match.js"></script>
+  <script src="./card.js"></script>
+  <script src="./app.js"></script>
+</body>
+
+</html>

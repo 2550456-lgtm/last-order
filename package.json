@@ -1,0 +1,17 @@
+{
+  "name": "hackmatch",
+  "version": "1.0.0",
+  "private": true,
+  "description": "HackMatch · 组队雷达 —— 黑客松现场组队名片生成器 + 破冰匹配器（零依赖）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node test/smoke.js"
+  },
+  "keywords": ["hackathon", "icebreaker", "team-forming", "zero-dependency"],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
