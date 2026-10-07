@@ -1,0 +1,118 @@
+<!doctype html>
+<!--
+  分享预览图的源文件（og:image），不是给用户看的页面。
+  它只做一件事：被无头浏览器截图成 public/img/og.png（1200×630）。
+  重新生成：pwsh -File scripts/shot.ps1 -Url "file:///<绝对路径>/scripts/og-source.html" -Out public/img/og.png -Width 1200 -Height 630 -WaitSec 8
+  样式全部内联，不依赖网络，改文案只改这个文件。
+-->
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      width: 1200px;
+      height: 630px;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: #e8edf7;
+      background:
+        radial-gradient(900px 480px at 8% -12%, rgba(99, 102, 241, .30), transparent 62%),
+        radial-gradient(760px 420px at 96% 4%, rgba(168, 85, 247, .22), transparent 60%),
+        radial-gradient(700px 500px at 70% 108%, rgba(245, 158, 11, .16), transparent 60%),
+        #070b16;
+      position: relative;
+    }
+
+    /* 程序化点阵，和 App 内保持一致的视觉语言 */
+    .dots {
+      position: absolute;
+      inset: 0;
+      background-image: radial-gradient(rgba(148, 163, 184, .10) 1.4px, transparent 1.4px);
+      background-size: 30px 30px;
+      mask-image: linear-gradient(160deg, #000 20%, transparent 78%);
+    }
+
+    .wrap {
+      position: relative;
+      height: 100%;
+      padding: 64px 72px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .brand { display: flex; align-items: center; gap: 30px; }
+
+    .mark {
+      width: 168px;
+      height: 168px;
+      border-radius: 34px;
+      image-rendering: pixelated;
+      box-shadow: 0 22px 48px rgba(245, 158, 11, .28);
+    }
+
+    .name { font-size: 74px; font-weight: 800; letter-spacing: -1px; line-height: 1; }
+
+    .cn {
+      font-size: 27px;
+      font-weight: 600;
+      color: #93a1b8;
+      letter-spacing: 12px;
+      margin-top: 14px;
+    }
+
+    .tag { font-size: 33px; color: #cbd5e1; font-weight: 500; line-height: 1.5; }
+
+    .chips { display: flex; gap: 14px; margin-top: 26px; }
+
+    .chip {
+      font-size: 22px;
+      font-weight: 600;
+      color: #dbe4f3;
+      border: 1.5px solid rgba(255, 255, 255, .16);
+      background: rgba(255, 255, 255, .05);
+      padding: 11px 24px;
+      border-radius: 999px;
+    }
+
+    .foot {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 22px;
+      color: #6b7a92;
+      font-weight: 600;
+    }
+
+    .foot i { width: 9px; height: 9px; border-radius: 50%; background: #10b981; }
+  </style>
+</head>
+
+<body>
+  <div class="dots"></div>
+  <div class="wrap">
+    <div class="brand">
+      <img class="mark" src="../public/img/logo.png" alt="">
+      <div>
+        <div class="name">Hackathon</div>
+        <div class="cn">组队雷达</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="tag">填 30 秒生成组队名片<br>随机抽两个人，聊 5 分钟</div>
+      <div class="chips">
+        <span class="chip">技能互补匹配</span>
+        <span class="chip">自动生成破冰话题</span>
+        <span class="chip">大屏倒计时</span>
+      </div>
+    </div>
+
+    <div class="foot"><i></i><span>零依赖 · 断网可用 · 手机直接打开</span></div>
+  </div>
+</body>
+
+</html>

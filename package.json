@@ -1,8 +1,8 @@
 {
-  "name": "hackmatch",
+  "name": "hackathon-radar",
   "version": "1.0.0",
   "private": true,
-  "description": "HackMatch · 组队雷达 —— 黑客松现场组队名片生成器 + 破冰匹配器（零依赖）",
+  "description": "Hackathon 组队雷达 —— 黑客松现场组队名片生成器 + 破冰匹配器（零依赖）",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

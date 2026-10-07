@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * HackMatch 冒烟测试：node test/smoke.js
+ * Hackathon 组队雷达 冒烟测试：node test/smoke.js
  * ---------------------------------------------------------------
  * 分两段：
  *   A. 算法单测 —— 不依赖服务端，直接 require 匹配内核
@@ -16,7 +16,7 @@ const os = require('os');
 
 const PORT = Number(process.env.TEST_PORT || 8899);
 const BASE = 'http://127.0.0.1:' + PORT;
-const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hackmatch-test-'));
+const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hackathon-radar-test-'));
 const M = require('../public/lib/match.js');
 
 let passed = 0;
@@ -36,12 +36,18 @@ function section(title) {
   console.log('\n' + title);
 }
 
-/* 固定种子的伪随机，方便复现 */
+/* 固定种子的伪随机，方便复现。
+   注意用 mulberry32 而不是朴素的 LCG：LCG 相邻种子的「第一个输出」几乎一样
+   （种子 1 和种子 400 的首个随机数只差 1.5e-4），会让「跑 N 次看分布」的断言
+   实际上只抽了一次，测了个寂寞。 */
 function seededRng(seed) {
-  let s = seed >>> 0;
+  let a = (seed * 0x9E3779B9) >>> 0;
   return function () {
-    s = (s * 1664525 + 1013904223) >>> 0;
-    return s / 4294967296;
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
 
@@ -129,7 +135,7 @@ function testAlgorithm() {
   const smartAvg = smartSum / 200, randAvg = randSum / 200;
   ok(smartAvg > randAvg, '智能模式平均分高于纯随机（' + smartAvg.toFixed(1) + ' vs ' + randAvg.toFixed(1) + '）');
 
-  // 老搭档降权：3 人池里有 1 对配过，跑 300 次看它有多常被再次抽中（均等概率应为 100 次）
+  // 选人规则第一层：只要还有没搭档过的人，就绝不会再抽老搭档
   const trio = [PEOPLE[0], PEOPLE[1], PEOPLE[4]];
   const hist = [{ a: PEOPLE[0].id, b: PEOPLE[1].id }];
   let repeated = 0;
@@ -138,8 +144,28 @@ function testAlgorithm() {
     const ids = [picked.a.id, picked.b.id];
     if (ids.indexOf(PEOPLE[0].id) >= 0 && ids.indexOf(PEOPLE[1].id) >= 0) repeated++;
   }
-  ok(repeated < 100, '老搭档被重复抽中的次数明显低于均等概率：' + repeated + '/300');
-  ok(repeated > 0, '但没有被硬性排除，仍有机会再聊一次：' + repeated + '/300');
+  ok(repeated === 0, '还有新人可配时，一次都不会重复抽老搭档：' + repeated + '/300');
+
+  // 第二层：所有人都互相聊过之后放开老搭档，不能出现「开不出人」的死锁
+  const allPaired = [
+    { a: PEOPLE[0].id, b: PEOPLE[1].id },
+    { a: PEOPLE[0].id, b: PEOPLE[4].id },
+    { a: PEOPLE[1].id, b: PEOPLE[4].id }
+  ];
+  const fallback = M.planMatches(trio, { mode: 'smart', count: 1, history: allPaired, rng: seededRng(3) });
+  ok(fallback.pairs.length === 1, '全员都聊过之后仍然开得出组合，不会死锁');
+  ok(fallback.pairs[0].dims.novelty < 0, '放开时的分数里体现了「已经聊过」的扣分：novelty=' + fallback.pairs[0].dims.novelty);
+
+  // 抽签不能退化成「永远同一对人」，随机性必须还在
+  const counts = {};
+  for (let i = 0; i < 400; i++) {
+    const p = M.planMatches(PEOPLE, { mode: 'smart', count: 1, rng: seededRng(i + 1) }).pairs[0];
+    const key = [p.a.id, p.b.id].sort().join('+');
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  const topCount = Math.max.apply(null, Object.keys(counts).map((k) => counts[k]));
+  ok(Object.keys(counts).length >= 3, '反复开轮会抽出不同组合：' + Object.keys(counts).length + ' 种');
+  ok(topCount / 400 < 0.9, '最高频组合也没占绝对多数，随机性保留：' + (topCount / 400 * 100).toFixed(0) + '%');
 
   // 冷启动：完全空资料的人也不能崩
   const empty = M.pairDetail(
@@ -157,6 +183,13 @@ function testAlgorithm() {
   ok(dirty.interests.length === 2, '兴趣去重：' + dirty.interests.length + ' 个');
   ok(M.validate(dirty).length === 0, '合法资料校验通过');
   ok(M.validate(M.normalizeProfile({ name: '' })).length === 3, '空资料报出 3 条错误');
+
+  // 自选头像：只认白名单格式，坏值一律清空（前端会把它拼进 <img src>，必须挡住）
+  ok(M.normalizeProfile({ name: 'x', avatar: 'avatar-03' }).avatar === 'avatar-03', '合法头像 id 保留');
+  ok(M.normalizeProfile({ name: 'x', avatar: '../../server.js' }).avatar === '', '路径穿越式头像被清空');
+  ok(M.normalizeProfile({ name: 'x', avatar: 'avatar-3' }).avatar === '', '位数不对的头像 id 被清空');
+  ok(M.normalizeProfile({ name: 'x', avatar: '<img onerror=x>' }).avatar === '', '注入式头像被清空');
+  ok(M.normalizeProfile({ name: 'x' }).avatar === '', '没填头像时为空字符串，走首字母兜底');
 
   // 头像配色决定论
   ok(M.avatarColors('阿离').from === M.avatarColors('阿离').from, '同名同色（决定论，无需图片素材）');
@@ -208,7 +241,9 @@ async function testEndToEnd() {
     // 静态资源
     const home = await fetch(BASE + '/');
     const homeHtml = await home.text();
-    ok(home.status === 200 && homeHtml.indexOf('HackMatch') >= 0, 'GET / 返回首页');
+    ok(home.status === 200 && homeHtml.indexOf('Hackathon') >= 0, 'GET / 返回首页');
+    ok(homeHtml.indexOf('__ORIGIN__') === -1, 'og 绝对地址占位符已被服务端替换');
+    ok(homeHtml.indexOf('http://127.0.0.1:' + PORT + '/img/og.png') >= 0, 'og:image 指向本机可访问的绝对地址');
     const lib = await fetch(BASE + '/lib/match.js');
     ok(lib.status === 200, 'GET /lib/match.js 能取到匹配内核（前后端共用一份）');
     const css = await fetch(BASE + '/styles.css');
@@ -216,12 +251,39 @@ async function testEndToEnd() {
     const trav = await fetch(BASE + '/../server.js');
     ok(trav.status === 403 || trav.status === 404, '目录穿越被挡（' + trav.status + '）');
 
+    // 新素材：logo / 分享预览图 / 自选头像
+    const logo = await fetch(BASE + '/img/logo.png');
+    ok(logo.status === 200 && logo.headers.get('content-type') === 'image/png', 'logo 能取到且类型正确');
+    ok(/max-age/.test(logo.headers.get('cache-control') || ''), '图片走长缓存（Cache-Control: ' + logo.headers.get('cache-control') + '）');
+    const og = await fetch(BASE + '/img/og.png');
+    ok(og.status === 200, '分享预览图 og.png 能取到');
+    let avatarCount = 0;
+    for (let i = 1; i <= 10; i++) {
+      const r = await fetch(BASE + '/avatars/avatar-' + String(i).padStart(2, '0') + '.png');
+      if (r.status === 200) avatarCount++;
+    }
+    ok(avatarCount === 10, '10 张自选头像全部可访问（实际 ' + avatarCount + ' 张）');
+
     // 登记
     for (const p of PEOPLE) {
       const r = await api('POST', '/api/participants', p);
       if (r.status !== 201) ok(false, '登记 ' + p.name, r);
     }
     ok(true, '登记 5 个人');
+
+    // 自选头像要能存能取
+    const withAvatar = await api('POST', '/api/participants', {
+      name: '带头像的人', skills: [{ name: 'Python', level: 'know' }],
+      interests: ['开源'], avatar: 'avatar-07'
+    });
+    ok(withAvatar.status === 201 && withAvatar.data.participant.avatar === 'avatar-07', '自选头像存进匹配池');
+    const badAvatar = await api('POST', '/api/participants', {
+      name: '坏头像的人', skills: [{ name: 'Python', level: 'know' }],
+      interests: ['开源'], avatar: '../../secret'
+    });
+    ok(badAvatar.status === 201 && badAvatar.data.participant.avatar === '', '坏头像被清洗成空值而不是报错');
+    await api('DELETE', '/api/participants/' + withAvatar.data.participant.id);
+    await api('DELETE', '/api/participants/' + badAvatar.data.participant.id);
 
     const dup = await api('POST', '/api/participants', PEOPLE[0]);
     ok(dup.status === 200 && dup.data.created === false, '同名同联系方式重复提交 → 更新而不是新增');
@@ -299,7 +361,7 @@ async function testEndToEnd() {
 /* ============================================================ 跑 */
 
 (async function main() {
-  console.log('HackMatch 冒烟测试');
+  console.log('Hackathon 组队雷达 冒烟测试');
   testAlgorithm();
   try {
     await testEndToEnd();

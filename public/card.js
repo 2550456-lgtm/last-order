@@ -1,15 +1,15 @@
 /*!
- * HackMatch · 组队名片渲染器
+ * Hackathon 组队雷达 —— 组队名片渲染器
  * ---------------------------------------------------------------
- * 整张名片用 Canvas 2D 画出来，不依赖任何图片素材：
- * 头像 = 名字哈希推导的双色渐变圆形 + 文字缩写
- * 背景 = 线性渐变 + 程序化点阵
+ * 整张名片用 Canvas 2D 画出来，不依赖外部图片素材（除了两张本地图：
+ * 用户自选的像素头像，以及页脚的 logo）。
+ * 没选头像时，头像 = 名字哈希推导的双色渐变圆形 + 文字缩写，保证永远不空。
  * 好处是「屏幕上看到的」和「下载到的 PNG」必然一模一样（同一份绘制代码）。
  */
 (function (root) {
   'use strict';
 
-  const M = root.HackMatch;
+  const M = root.HackathonRadar;
   const W = 720;          // 逻辑宽度
   const SCALE = 2;        // 导出 2 倍图，手机上看也清晰
   const PAD = 60;
@@ -19,6 +19,27 @@
     know: { bg: 'rgba(59,130,246,.16)', fg: '#93c5fd', line: 'rgba(147,197,253,.38)' },
     learn: { bg: 'rgba(245,158,11,.16)', fg: '#fcd34d', line: 'rgba(252,211,77,.38)' }
   };
+
+  /* ---------------------------------------------------------- 图片缓存
+     头像和 logo 是本地文件，第一帧可能还没加载完。策略是：先用兜底图形顶上，
+     加载完再把「最新一次渲染的参数」重画一遍 —— 只重画一次，不会循环。 */
+  const imgCache = {};
+
+  function getImage(key, src, args) {
+    let rec = imgCache[key];
+    if (!rec) {
+      rec = { img: new Image(), ready: false, failed: false, args: null };
+      rec.img.onload = function () {
+        rec.ready = true;
+        if (rec.args) render(rec.args.canvas, rec.args.profile, rec.args.opts);
+      };
+      rec.img.onerror = function () { rec.failed = true; };
+      rec.img.src = src;
+      imgCache[key] = rec;
+    }
+    if (!rec.ready) rec.args = args;
+    return rec;
+  }
 
   function roundRect(ctx, x, y, w, h, r) {
     const rr = Math.min(r, h / 2, w / 2);
@@ -146,7 +167,34 @@
     ctx.fillRect(0, 0, W, 10);
   }
 
-  function drawAvatar(ctx, cx, cy, r, profile, colors) {
+  function drawAvatar(ctx, cx, cy, r, profile, colors, avatarRec) {
+    // 外圈
+    const ring = () => {
+      ctx.beginPath();
+      ctx.arc(cx, cy, r + 9, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255,255,255,.10)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    };
+
+    if (avatarRec && avatarRec.ready) {
+      // 选了自选头像：圆形裁切后画进去
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(avatarRec.img, cx - r, cy - r, r * 2, r * 2);
+      ctx.restore();
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255,255,255,.18)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ring();
+      return;
+    }
+
+    // 兜底（也是没选头像时的正常形态）：渐变圆 + 首字母
     const g = ctx.createLinearGradient(cx - r, cy - r, cx + r, cy + r);
     g.addColorStop(0, colors.from);
     g.addColorStop(1, colors.to);
@@ -155,17 +203,13 @@
     ctx.fillStyle = g;
     ctx.fill();
 
-    ctx.beginPath();
-    ctx.arc(cx, cy, r + 9, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(255,255,255,.10)';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
     ctx.fillStyle = '#0b1020';
     ctx.font = '800 52px system-ui, "PingFang SC", "Microsoft YaHei", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(M.initials(profile.name), cx, cy + 3);
+
+    ring();
   }
 
   /**
@@ -220,7 +264,14 @@
     ctx.clearRect(0, 0, W, height);
 
     drawBackground(ctx, height, colors);
-    drawAvatar(ctx, W / 2, 186, 74, profile, colors);
+
+    // 头像 / logo：本地图，第一帧没加载完会先用兜底图形，加载完自动重画
+    const args = { canvas: canvas, profile: profile, opts: opts };
+    const avatarRec = profile.avatar
+      ? getImage('av:' + profile.avatar, 'avatars/' + profile.avatar + '.png', args) : null;
+    const logoRec = getImage('logo', 'img/logo.png', args);
+
+    drawAvatar(ctx, W / 2, 186, 74, profile, colors, avatarRec);
 
     // 名字
     ctx.textAlign = 'center';
@@ -303,13 +354,24 @@
     ctx.fillStyle = profile.contact ? '#e2e8f0' : 'rgba(148,163,184,.5)';
     ctx.fillText(profile.contact || '（未填写联系方式）', PAD + 118, contactY + 32);
 
-    // 页脚
+    // 页脚：logo + 产品名 + 活动名
+    const footY = height - 40;
+    let footX = PAD;
+    if (logoRec.ready) {
+      const size = 26;
+      ctx.save();
+      roundRect(ctx, footX, footY - size + 6, size, size, 7);
+      ctx.clip();
+      ctx.drawImage(logoRec.img, footX, footY - size + 6, size, size);
+      ctx.restore();
+      footX += size + 10;
+    }
     ctx.font = '500 17px system-ui, "PingFang SC", "Microsoft YaHei", sans-serif';
     ctx.fillStyle = 'rgba(148,163,184,.55)';
     ctx.textAlign = 'left';
-    ctx.fillText('HackMatch · 组队雷达', PAD, height - 40);
+    ctx.fillText('Hackathon 组队雷达', footX, footY);
     ctx.textAlign = 'right';
-    ctx.fillText(opts.event || profile.event || '黑客松现场', W - PAD, height - 40);
+    ctx.fillText(opts.event || profile.event || '黑客松现场', W - PAD, footY);
 
     return { width: W, height: height };
   }

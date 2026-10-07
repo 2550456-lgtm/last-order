@@ -1,8 +1,8 @@
 /*!
- * HackMatch · 组队雷达 —— 匹配算法内核
+ * Hackathon 组队雷达 —— 匹配算法内核
  * ---------------------------------------------------------------
  * 这份文件被两边同时加载：
- *   1. 浏览器：<script src="/lib/match.js">  → window.HackMatch
+ *   1. 浏览器：<script src="./lib/match.js">  → window.HackathonRadar
  *   2. Node 服务端：require('../public/lib/match.js')
  * 目的：算分逻辑只有一份，前端展示的「匹配度」和真正配对用的分数永远一致。
  *
@@ -15,9 +15,18 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.HackMatch = factory();
+  else root.HackathonRadar = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
+
+  // 可选头像白名单格式：只允许 avatar-01 … avatar-99，
+  // 这样前端可以放心把它拼进 <img src>，不存在路径注入
+  var AVATAR_RE = /^avatar-\d{2}$/;
+
+  function normalizeAvatar(v) {
+    var s = String(v == null ? '' : v).trim();
+    return AVATAR_RE.test(s) ? s : '';
+  }
 
   var LEVELS = [
     { id: 'learn', label: '想学', rank: 1 },
@@ -26,10 +35,13 @@
   ];
 
   var MODES = [
-    { id: 'smart', label: '智能互补', desc: '按互补度加权随机，最容易凑出能干活的组合' },
-    { id: 'interest', label: '兴趣同好', desc: '优先兴趣重合度高的人，适合纯聊天破冰' },
-    { id: 'random', label: '完全随机', desc: '等概率抽签，最公平也最容易撞见陌生人' }
+    { id: 'smart', label: '智能互补', icon: 'i-target', desc: '按互补度加权随机，最容易凑出能干活的组合' },
+    { id: 'interest', label: '兴趣同好', icon: 'i-heart', desc: '优先兴趣重合度高的人，适合纯聊天破冰' },
+    { id: 'random', label: '完全随机', icon: 'i-dice', desc: '不按资料加权，等概率抽签，最公平' }
   ];
+
+  /* 三种模式都遵守的同一条现场规则：优先让没搭档过的人配对（见新人），
+     实在凑不出来才放开老搭档。详见 planMatches 的两层选人。 */
 
   var MAX = { complement: 30, shared: 10, interest: 25, role: 30, novelty: 5 };
 
@@ -238,25 +250,29 @@
     };
   }
 
-  /* 按模式把分数翻译成抽签权重，再用轮盘赌抽 —— 保证「随机」是真的随机，只是有偏好 */
-  function weightOf(detail, mode, history, a, b) {
-    var w;
-    if (mode === 'random') {
-      w = 1;
-    } else if (mode === 'interest') {
-      w = 0.3 + 2.7 * detail.jaccard;
-    } else {
-      w = 0.25 + 2.75 * Math.pow(detail.score / 100, 2);
+  /* 按模式把分数翻译成抽签权重。
+     关键点：权重是「相对于本批候选里最好的那个」算的（差值为 0 的那个权重恒为 1），
+     而不是绝对分数。否则在大部分组合都很平庸的池子里，几十个平庸候选的权重加起来
+     会盖过唯一的好组合 —— 实测就是这么开出过两组「匹配度 5」的人。
+     温度 15（分数）/ 0.18（兴趣相似度）是手调的：差 15 分 → 权重差 e 倍。 */
+  function weightOf(detail, mode, ctx) {
+    ctx = ctx || {};
+    if (mode === 'random') return 1;
+    if (mode === 'interest') {
+      return Math.exp((detail.jaccard - (ctx.maxJac || 0)) / 0.18);
     }
-    var times = timesPaired(history, a.id, b.id);
-    if (times > 0) w *= Math.pow(0.25, times); // 老搭档快速降权，但不断路
-    return w;
+    return Math.exp((detail.score - (ctx.maxScore || 0)) / 15);
   }
 
   /**
    * 生成一轮配对方案。
+   * 选人规则（分两层，先严后松）：
+   *   第一层：只在「从没搭档过」的人之间抽 —— 破冰活动的核心目的就是见新人
+   *   第二层：如果第一层凑不出人（例如所有人都互相聊过了），再放开老搭档，
+   *          这时分数里的新鲜度扣分和额外降权会一起起作用，但不会死锁
+   *
    * @param {array}  pool   参与者数组
-   * @param {object} opts   { mode, count, history, rng, exclude:Set-like }
+   * @param {object} opts   { mode, count, history, rng }
    * @returns {{pairs:array, bye:object|null, unmatched:array}}
    */
   function planMatches(pool, opts) {
@@ -270,25 +286,39 @@
     var out = [];
 
     for (var n = 0; n < count && remaining.length >= 2; n++) {
-      var cands = [];
-      var total = 0;
+      var fresh = [];
+      var repeats = [];
+      var maxScore = -Infinity, maxJac = 0;
+
       for (var i = 0; i < remaining.length; i++) {
         for (var j = i + 1; j < remaining.length; j++) {
           var a = remaining[i], b = remaining[j];
           var detail = pairDetail(a, b, history);
-          var w = weightOf(detail, mode, history, a, b);
-          if (!(w > 0)) continue;
-          cands.push({ i: i, j: j, detail: detail, w: w });
-          total += w;
+          var item = { i: i, j: j, detail: detail, times: detail.timesPaired };
+          if (detail.timesPaired === 0) fresh.push(item); else repeats.push(item);
+          if (detail.score > maxScore) maxScore = detail.score;
+          if (detail.jaccard > maxJac) maxJac = detail.jaccard;
         }
       }
-      if (!cands.length || !(total > 0)) break;
+
+      var cands = fresh.length ? fresh : repeats;
+      if (!cands.length) break;
+
+      var ctx = { maxScore: maxScore, maxJac: maxJac };
+      var total = 0;
+      cands.forEach(function (c) {
+        c.w = weightOf(c.detail, mode, ctx);
+        // 第二层才用得上：老搭档再额外降权一次（分数里的新鲜度已经扣过一轮）
+        if (c.times > 0) c.w *= Math.pow(0.25, c.times);
+        total += c.w;
+      });
+      if (!(total > 0)) break;
 
       var r = rng() * total;
       var chosen = cands[cands.length - 1];
-      for (var c = 0; c < cands.length; c++) {
-        r -= cands[c].w;
-        if (r <= 0) { chosen = cands[c]; break; }
+      for (var c2 = 0; c2 < cands.length; c2++) {
+        r -= cands[c2].w;
+        if (r <= 0) { chosen = cands[c2]; break; }
       }
 
       out.push({
@@ -351,6 +381,7 @@
       id: raw.id || null,
       name: name,
       tagline: String(raw.tagline == null ? '' : raw.tagline).trim().slice(0, 60),
+      avatar: normalizeAvatar(raw.avatar),
       skills: skills.slice(0, 12),
       interests: interests.slice(0, 12),
       lookingFor: lookingFor.slice(0, 6),
@@ -381,6 +412,8 @@
     levelLabel: levelLabel,
     avatarColors: avatarColors,
     initials: initials,
+    normalizeAvatar: normalizeAvatar,
+    AVATAR_RE: AVATAR_RE,
     timesPaired: timesPaired,
     pairDetail: pairDetail,
     weightOf: weightOf,

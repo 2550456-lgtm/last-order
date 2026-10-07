@@ -1,24 +1,28 @@
 /*!
- * HackMatch · 组队雷达 —— 前端主逻辑
+ * Hackathon 组队雷达 —— 前端主逻辑
  * ---------------------------------------------------------------
  * 两种运行模式，同一套代码：
  *   在线：连上 server.js，匹配池和配对记录在服务端，多台手机 + 大屏实时同步（SSE）
  *   离线：直接双击 index.html 打开也能用，数据退化成 localStorage，只影响本机
- * 匹配算法始终调用 /lib/match.js 那一份，两种模式算出来的分数完全一致。
+ * 匹配算法始终调用 ./lib/match.js 那一份，两种模式算出来的分数完全一致。
  */
 (function () {
   'use strict';
 
-  const M = window.HackMatch;
+  const M = window.HackathonRadar;
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.prototype.slice.call(document.querySelectorAll(sel));
 
+  // 自选头像：文件在 public/avatars/ 下，由 scripts 里的图片处理流程生成
+  const AVATARS = ['avatar-01', 'avatar-02', 'avatar-03', 'avatar-04', 'avatar-05',
+    'avatar-06', 'avatar-07', 'avatar-08', 'avatar-09', 'avatar-10'];
+
   const LS = {
-    profile: 'hackmatch.profile.v1',
-    pool: 'hackmatch.pool.v1',
-    pairs: 'hackmatch.pairs.v1',
-    settings: 'hackmatch.settings.v1',
-    me: 'hackmatch.me.v1'
+    profile: 'hackathon.profile.v1',
+    pool: 'hackathon.pool.v1',
+    pairs: 'hackathon.pairs.v1',
+    settings: 'hackathon.settings.v1',
+    me: 'hackathon.me.v1'
   };
 
   const PRESET_SKILLS = ['JavaScript', 'Python', '前端', '后端', 'UI 设计', '产品经理', '硬件/嵌入式',
@@ -70,10 +74,21 @@
     return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
   }
 
-  function avatarHtml(name, cls) {
+  function avatarHtml(name, cls, avatarId) {
     const c = M.avatarColors(name || '?');
-    return '<span class="avatar ' + (cls || '') + '" style="background:linear-gradient(135deg,' +
-      c.from + ',' + c.to + ')">' + esc(M.initials(name)) + '</span>';
+    const style = 'background:linear-gradient(135deg,' + c.from + ',' + c.to + ')';
+    // 选了自选头像就画图，否则用名字哈希生成的双色圆 + 首字母兜底。
+    // avatarId 已经在 M.normalizeProfile 里按白名单校验过，这里再 esc 一层。
+    if (avatarId && M.AVATAR_RE.test(avatarId)) {
+      return '<span class="avatar ' + (cls || '') + '" style="' + style + '">' +
+        '<img src="./avatars/' + esc(avatarId) + '.png" alt="" loading="lazy"></span>';
+    }
+    return '<span class="avatar ' + (cls || '') + '" style="' + style + '">' +
+      esc(M.initials(name)) + '</span>';
+  }
+
+  function icon(name, cls) {
+    return '<svg class="ic ' + (cls || '') + '"><use href="#' + name + '"/></svg>';
   }
 
   /* 局域网 http 下 navigator.clipboard 不可用（非安全上下文），必须有兜底 */
@@ -104,7 +119,7 @@
   /* 名片分享链接：把资料编码进 URL，对方不用连服务端也能看到卡片 */
   function encodeProfile(p) {
     const compact = {
-      n: p.name, t: p.tagline,
+      n: p.name, t: p.tagline, a: p.avatar || '',
       s: (p.skills || []).map((s) => [s.name, s.level]),
       i: p.interests || [], l: p.lookingFor || [], c: p.contact || '', e: p.event || ''
     };
@@ -120,7 +135,7 @@
       const json = decodeURIComponent(escape(atob(b64)));
       const c = JSON.parse(json);
       return M.normalizeProfile({
-        name: c.n, tagline: c.t,
+        name: c.n, tagline: c.t, avatar: c.a,
         skills: (c.s || []).map((pair) => ({ name: pair[0], level: pair[1] })),
         interests: c.i, lookingFor: c.l, contact: c.c, event: c.e
       });
@@ -160,7 +175,7 @@
   /* ------------------------------------------------------------- 名片草稿 */
 
   let draft = lsGet(LS.profile, {
-    id: null, name: '', tagline: '', skills: [], interests: [], lookingFor: [], contact: '', event: ''
+    id: null, name: '', tagline: '', avatar: '', skills: [], interests: [], lookingFor: [], contact: '', event: ''
   });
 
   function draftProfile() {
@@ -189,6 +204,19 @@
     $('#chips-interests').innerHTML = draft.interests.map((s) => chipHtml(s, 'interest')).join('');
     $('#chips-looking').innerHTML = draft.lookingFor.map((s) => chipHtml(s, 'look')).join('');
     renderPresets();
+    renderAvatarPicker();
+  }
+
+  function renderAvatarPicker() {
+    const box = $('#avatar-picker');
+    if (!box) return;
+    const head = '<button type="button" data-av="" class="none' + (draft.avatar ? '' : ' on') +
+      '" title="用名字首字母">首字母</button>';
+    box.innerHTML = head + AVATARS.map((id) => {
+      const n = id.slice(-2);
+      return '<button type="button" data-av="' + id + '"' + (draft.avatar === id ? ' class="on"' : '') +
+        ' title="像素头像 ' + n + '"><img src="./avatars/' + id + '.png" alt="头像 ' + n + '" loading="lazy"></button>';
+    }).join('');
   }
 
   function renderPresets() {
@@ -294,8 +322,20 @@
     $('#btn-share').addEventListener('click', shareCard);
     $('#btn-clear').addEventListener('click', () => {
       if (!confirm('清空这张名片？（不会把已保存的人从匹配池里删掉）')) return;
-      draft = { id: null, name: '', tagline: '', skills: [], interests: [], lookingFor: [], contact: '', event: '' };
+      draft = {
+        id: null, name: '', tagline: '', avatar: '', skills: [], interests: [],
+        lookingFor: [], contact: '', event: ''
+      };
       persistDraft(); fillForm(); renderChips(); renderCard(); toast('已清空');
+    });
+
+    // 自选头像：点一下选中，再点一下同一张就取消，回到「首字母」兜底
+    $('#avatar-picker').addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-av]');
+      if (!b) return;
+      const id = b.dataset.av || '';
+      draft.avatar = (draft.avatar === id) ? '' : id;
+      persistDraft(); renderAvatarPicker(); renderCard();
     });
 
     fillForm();
@@ -372,7 +412,9 @@
   function modeListHtml() {
     return M.MODES.map((m) => (
       '<div class="mode-card ' + (Store.ui.mode === m.id ? 'on' : '') + '" data-mode="' + m.id + '">' +
-      '<span class="radio"></span><span><strong>' + esc(m.label) + '</strong>' +
+      '<span class="radio"></span>' +
+      '<svg class="ic mode-ic"><use href="#' + (m.icon || 'i-target') + '"/></svg>' +
+      '<span><strong>' + esc(m.label) + '</strong>' +
       '<span>' + esc(m.desc) + '</span></span></div>'
     )).join('');
   }
@@ -394,7 +436,7 @@
       return;
     }
     el.innerHTML = list.map((p) => (
-      '<span class="pool-item">' + avatarHtml(p.name) +
+      '<span class="pool-item">' + avatarHtml(p.name, '', p.avatar) +
       '<span class="who">' + esc(p.name) +
       '<em>' + esc(p.skills.slice(0, 3).map((s) => s.name).join(' · ') || '没填技能') + '</em></span></span>'
     )).join('');
@@ -429,7 +471,7 @@
       return;
     }
     box.innerHTML = scored.map((row) => (
-      '<div class="mymatch-row">' + avatarHtml(row.p.name) +
+      '<div class="mymatch-row">' + avatarHtml(row.p.name, '', row.p.avatar) +
       '<span style="flex:1;min-width:0"><strong>' + esc(row.p.name) + '</strong>' +
       '<div class="why">' + esc(row.d.reasons[0] || '还没找到明显的交集，去聊聊看') + '</div></span>' +
       '<span class="bar"><i style="width:' + row.d.score + '%"></i></span>' +
@@ -440,7 +482,7 @@
   function sideHtml(p, small) {
     if (!p) return '<div class="side"><strong>？</strong></div>';
     const skills = p.skills.slice(0, small ? 3 : 4);
-    return '<div class="side">' + avatarHtml(p.name, small ? '' : 'lg') +
+    return '<div class="side">' + avatarHtml(p.name, small ? '' : 'lg', p.avatar) +
       '<strong>' + esc(p.name) + '</strong>' +
       '<span class="tag">' + esc(p.tagline || '') + '</span>' +
       '<span class="sk">' + skills.map((s) => '<span>' + esc(s.name) + '</span>').join('') + '</span>' +
@@ -488,9 +530,9 @@
         '<li><i>' + (i + 1) + '</i><span>' + esc(t) + '</span></li>').join('') + '</ul>' +
       dims +
       (active ? '<div class="pair-actions">' +
-        '<button data-act="extend">延长 2 分钟</button>' +
-        '<button data-act="finish">结束这组</button>' +
-        '<button data-act="copy">复制话题</button>' +
+        '<button data-act="extend">' + icon('i-clock') + '延长 2 分钟</button>' +
+        '<button data-act="finish">' + icon('i-check') + '结束这组</button>' +
+        '<button data-act="copy">' + icon('i-link') + '复制话题</button>' +
         '</div>' : '') +
       '</article>';
   }

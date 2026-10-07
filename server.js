@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * HackMatch · 组队雷达 —— 零依赖服务端
+ * Hackathon 组队雷达 —— 零依赖服务端
  * ---------------------------------------------------------------
  * 只用 Node 内置模块（http / fs / path / os / crypto），不需要 npm install。
  * 职责：
@@ -199,11 +199,34 @@ function serveStatic(req, res, urlPath) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('404 Not Found');
       return;
     }
-    res.writeHead(200, {
-      'Content-Type': MIME[path.extname(target).toLowerCase()] || 'application/octet-stream',
-      'Cache-Control': 'no-cache',
-      'Content-Length': st.size
-    });
+
+    const ext = path.extname(target).toLowerCase();
+    const type = MIME[ext] || 'application/octet-stream';
+
+    // 图片可以长缓存（文件名不变时内容也不会变），页面和脚本保持不缓存
+    const cache = /\.(png|jpg|jpeg|svg|ico|webp)$/.test(ext)
+      ? 'public, max-age=86400' : 'no-cache';
+
+    // index.html 里 og:image / og:url 需要绝对地址，微信之类的爬虫不会执行 JS，
+    // 所以在这里按请求实际用的 Host 替换掉占位符 —— 换成局域网 IP 或域名都不用改代码。
+    if (ext === '.html') {
+      fs.readFile(target, 'utf8', (e2, html) => {
+        if (e2) { res.writeHead(500).end('500'); return; }
+        const host = req.headers.host || ('localhost:' + PORT);
+        const proto = String(req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim();
+        const origin = proto + '://' + host;
+        const body = Buffer.from(html.split('__ORIGIN__').join(origin), 'utf8');
+        res.writeHead(200, {
+          'Content-Type': type,
+          'Cache-Control': cache,
+          'Content-Length': body.length
+        });
+        res.end(body);
+      });
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': type, 'Cache-Control': cache, 'Content-Length': st.size });
     fs.createReadStream(target).pipe(res);
   });
 }
@@ -435,7 +458,7 @@ loadState();
 server.listen(PORT, HOST, () => {
   const lines = [
     '',
-    '  HackMatch · 组队雷达 已启动',
+    '  Hackathon 组队雷达 已启动',
     '  ─────────────────────────────────────────────',
     '  本机访问 : http://localhost:' + PORT + '/',
     ...lanAddresses().map(ip => '  手机访问 : http://' + ip + ':' + PORT + '/   (同一 WiFi 下)'),
