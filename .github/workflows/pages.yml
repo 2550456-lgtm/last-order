@@ -40,11 +40,33 @@ jobs:
           node --check public/app.js
           node --check public/card.js
           node --check public/lib/match.js
+          node --check public/lib/demo-people.js
           node --check server.js
           test -f public/index.html
           test -f public/img/og.png
           test -f public/avatars/avatar-10.png
           echo "前端文件齐全，语法检查通过"
+
+      # index.html 里的 og:image / og:url 需要绝对地址，爬虫不执行 JS，
+      # 静态托管又没有服务端来做替换 —— 所以在发布前把它们换成这个站点的真实地址。
+      # 用户主页仓库（<owner>.github.io）没有子路径，单独判断一下。
+      - name: 用真实站点地址替换 __ORIGIN__
+        run: |
+          set -euo pipefail
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          if [ "$REPO" = "$OWNER.github.io" ]; then
+            ORIGIN="https://$OWNER.github.io"
+          else
+            ORIGIN="https://$OWNER.github.io/$REPO"
+          fi
+          echo "站点地址：$ORIGIN"
+          grep -rl '__ORIGIN__' public | xargs -r sed -i "s|__ORIGIN__|$ORIGIN|g"
+          if grep -rq '__ORIGIN__' public; then
+            echo "::error::还有没替换掉的 __ORIGIN__ 占位符"
+            exit 1
+          fi
+          grep -o 'og:image" content="[^"]*"' public/index.html || true
 
       - uses: actions/configure-pages@v5
 

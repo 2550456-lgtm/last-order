@@ -140,6 +140,8 @@
   </header>
 
   <main>
+    <!-- 单机 / 静态部署时的说明条，由 app.js 决定要不要显示 -->
+    <div class="notice" id="notice" hidden></div>
     <!-- ============================ 组队名片 ============================ -->
     <section class="view" id="view-card">
       <div class="hero">
@@ -383,6 +385,7 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script src="./lib/match.js"></script>
+  <script src="./lib/demo-people.js"></script>
   <script src="./card.js"></script>
   <script src="./app.js"></script>
 </body>

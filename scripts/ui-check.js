@@ -133,6 +133,35 @@ const SEED = [
   { name: '何嘉', avatar: 'avatar-06', tagline: '模型调得比人准一点', skills: [{ name: '算法', level: 'pro' }, { name: 'Python', level: 'pro' }], interests: ['AI 应用', '跑步'], lookingFor: ['硬件/嵌入式'], contact: 'wx: hejia' }
 ];
 
+/* --------------------------------------- 纯静态服务器（模拟 GitHub Pages 那种托管）
+   静态托管上没有 /api/*，访问会返回一个 404 的 HTML 页面。
+   这里起一个只发静态文件的服务来复现这种情况，验证前端能识别出来并切到单机模式。 */
+function startStaticServer(port, rootDir) {
+  const http = require('http');
+  const MIME = {
+    '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.json': 'application/json'
+  };
+  const srv = http.createServer((req, res) => {
+    const rel = decodeURIComponent((req.url || '/').split('?')[0]);
+    if (rel.indexOf('/api/') === 0) {
+      res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<!doctype html><title>404</title><h1>404 Not Found</h1>');
+      return;
+    }
+    const file = path.join(rootDir, rel === '/' ? 'index.html' : rel);
+    if (path.normalize(file).indexOf(path.normalize(rootDir)) !== 0 ||
+      !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+      res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<!doctype html><title>404</title>');
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
+    fs.createReadStream(file).pipe(res);
+  });
+  return new Promise((resolve) => srv.listen(port, '127.0.0.1', () => resolve(srv)));
+}
+
 /* ----------------------------------------------------------------- 主流程 */
 async function main() {
   const browserPath = findBrowser();
@@ -144,6 +173,9 @@ async function main() {
     env: Object.assign({}, process.env, { PORT: String(APP_PORT), DATA_DIR }),
     stdio: ['ignore', 'ignore', 'inherit']
   });
+  const STATIC_PORT = APP_PORT + 1;
+  const STATIC_BASE = 'http://127.0.0.1:' + STATIC_PORT;
+  let staticSrv = null;
 
   let browser = null, cdp = null;
   try {
@@ -321,17 +353,54 @@ async function main() {
     await cdp.send('Emulation.clearDeviceMetricsOverride');
     await sleep(300);
 
-    console.log('\nD. 截图留存');
+    console.log('\nD. 静态部署（没有服务端，模拟 GitHub Pages）');
+    staticSrv = await startStaticServer(STATIC_PORT, path.join(__dirname, '..', 'public'));
+    await cdp.send('Page.navigate', { url: STATIC_BASE + '/#/card' });
+    await sleep(2500);
+
+    ok((await cdp.js('window.__hsErrors.length')) === 0,
+      '静态托管下页面零 JS 报错', await cdp.js('window.__hsErrors'));
+    ok((await cdp.js(`document.querySelector('#notice').hidden`)) === false,
+      '自动识别出没有服务端，弹出单机模式说明条');
+    const noticeText = await cdp.js(`document.querySelector('#notice').textContent`);
+    ok(/单机模式/.test(noticeText) && /node server\.js/.test(noticeText),
+      '说明条讲清楚了能做什么、以及怎么才能多设备同步');
+    ok((await cdp.js(`/单机模式/.test(document.querySelector('#foot-mode').textContent)`)) === true,
+      '页脚也标成单机模式：' + (await cdp.js(`document.querySelector('#foot-mode').textContent`)));
+
+    // 静态部署下匹配池默认是空的，必须能一键载入演示数据，否则没东西可试
+    ok((await cdp.js(`document.querySelectorAll('#notice .js-demo').length`)) === 1,
+      '说明条上有「载入演示参与者」按钮');
+    await cdp.js(`document.querySelector('#notice .js-demo').click(); 'ok'`);
+    await sleep(500);
+    await cdp.js(`location.hash = '#/match'; 'ok'`);
+    await sleep(600);
+    const staticPool = await cdp.js(`document.querySelectorAll('#pool-list .pool-item').length`);
+    ok(staticPool === 8, '一键载入 8 个演示参与者：' + staticPool + ' 个');
+
+    await cdp.js(`document.querySelector('#btn-match').click(); 'ok'`);
+    await sleep(1200);
+    ok((await cdp.js(`document.querySelectorAll('#pairs .pair').length`)) >= 1,
+      '没有服务端也能在本地开出配对（纯前端跑匹配算法）');
+    ok(/^\d\d:\d\d$/.test(await cdp.js(`document.querySelector('#pairs .pair .timer .num').textContent`)),
+      '本地配对的倒计时也正常：' + (await cdp.js(`document.querySelector('#pairs .pair .timer .num').textContent`)));
+    const staticShot = await cdp.shot('ui-03-static.png', true);
+
+    console.log('\nE. 截图留存');
+    await cdp.send('Page.navigate', { url: BASE + '/#/card' });
+    await sleep(2000);
     const f1 = await cdp.shot('ui-01-card.png', true);
     await cdp.js(`location.hash = '#/match'; 'ok'`);
     await sleep(700);
     const f2 = await cdp.shot('ui-02-match.png', true);
     console.log('  · ' + f1);
     console.log('  · ' + f2);
+    console.log('  · ' + staticShot);
   } finally {
     if (cdp) cdp.close();
     if (browser) { browser.kill(); }
     await sleep(300);
+    if (staticSrv) staticSrv.close();
     server.kill();
     await sleep(200);
     for (const d of [DATA_DIR, UDD]) {

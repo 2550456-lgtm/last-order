@@ -22,7 +22,8 @@
     pool: 'hackathon.pool.v1',
     pairs: 'hackathon.pairs.v1',
     settings: 'hackathon.settings.v1',
-    me: 'hackathon.me.v1'
+    me: 'hackathon.me.v1',
+    notice: 'hackathon.notice.v1'
   };
 
   const PRESET_SKILLS = ['JavaScript', 'Python', '前端', '后端', 'UI 设计', '产品经理', '硬件/嵌入式',
@@ -156,7 +157,11 @@
     localSettings: lsGet(LS.settings, { event: '黑客松现场', durationSec: 300, mode: 'smart', count: 1 }),
     me: lsGet(LS.me, ''),
     ui: { mode: 'smart', durationSec: 300, count: 1 },
-    uiTouched: false
+    uiTouched: false,
+    // 单机模式的原因：forced=?offline=1 / file=直接双击 html / static=静态托管没有接口
+    localReason: '',
+    noticeDismissed: lsGet(LS.notice, false),
+    noSse: false
   };
 
   function serverNow() { return Date.now() + Store.offset; }
@@ -359,7 +364,7 @@
     profile.event = settings().event;
     if (Store.online) {
       try {
-        const res = await fetch('/api/participants', {
+        const res = await fetch('./api/participants', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(profile)
@@ -436,7 +441,10 @@
     const list = pool();
     const el = $('#pool-list');
     if (!list.length) {
-      el.innerHTML = '<p class="empty">匹配池还是空的。先在「组队名片」里填一张，或者把链接发到群里让大家自己填。</p>';
+      const n = Store.online ? 0 : demoPeople().length;
+      el.innerHTML = '<p class="empty">匹配池还是空的。先在「组队名片」里填一张，或者把链接发到群里让大家自己填。' +
+        (n ? ' 只想先看看效果？' : '') + '</p>' +
+        (n ? '<button class="primary js-demo">' + icon('i-users') + '载入 ' + n + ' 个演示参与者</button>' : '');
       return;
     }
     el.innerHTML = list.map((p) => (
@@ -663,7 +671,7 @@
     const payload = { mode: Store.ui.mode, count: Store.ui.count, durationSec: Store.ui.durationSec };
     try {
       if (Store.online) {
-        const res = await fetch('/api/match', {
+        const res = await fetch('./api/match', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -707,7 +715,7 @@
   async function pairAction(pairId, action, payload) {
     if (Store.online) {
       try {
-        const res = await fetch('/api/pairs/' + encodeURIComponent(pairId), {
+        const res = await fetch('./api/pairs/' + encodeURIComponent(pairId), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(Object.assign({ action: action }, payload || {}))
@@ -731,7 +739,7 @@
     if (!active.length) return toast('当前没有进行中的配对');
     if (!confirm('结束全部 ' + active.length + ' 组？')) return;
     if (Store.online) {
-      await Promise.all(active.map((p) => fetch('/api/pairs/' + encodeURIComponent(p.id), {
+      await Promise.all(active.map((p) => fetch('./api/pairs/' + encodeURIComponent(p.id), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'finish' })
       })));
@@ -746,7 +754,7 @@
   async function clearPairs() {
     if (!confirm('清空所有配对记录？（匹配池里的人保留）')) return;
     if (Store.online) {
-      await fetch('/api/reset', {
+      await fetch('./api/reset', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ what: 'pairs' })
       });
     } else {
@@ -791,7 +799,9 @@
     const el = $('#conn');
     el.className = 'conn ' + state;
     el.querySelector('span').textContent = text;
-    $('#foot-mode').textContent = state === 'on' ? '已连服务端（多设备同步）' : '本地模式（只影响本机）';
+    $('#foot-mode').textContent = state === 'on'
+      ? (Store.noSse ? '已连服务端（不实时刷新）' : '已连服务端（多设备同步）')
+      : '单机模式（数据只在这台设备）';
   }
 
   function applyState(snap) {
@@ -807,33 +817,37 @@
   }
 
   async function connect() {
-    // ?offline=1 强制本地模式：活动现场网络不稳、或者只是想先看看界面时用
+    // ?offline=1 强制单机模式：活动现场网络不稳、或者只是想先看看界面时用
     if (/[?&]offline=1/.test(location.search)) {
       Store.online = false;
-      setConn('off', '离线模式（?offline=1）');
+      Store.localReason = 'forced';
+      setConn('off', '单机模式（?offline=1）');
       renderAll();
       return;
     }
     // ?nosse=1 只拉一次数据、不订阅实时推送：投屏机长时间挂着、或者弱网时更省心
-    const noSse = /[?&]nosse=1/.test(location.search);
+    Store.noSse = /[?&]nosse=1/.test(location.search);
     try {
-      const res = await fetch('/api/state', { cache: 'no-store' });
-      if (!res.ok) throw new Error('bad status');
+      const res = await fetch('./api/state', { cache: 'no-store' });
+      // 静态托管（GitHub Pages 之类）这里会返回 404 的 HTML，内容不是 JSON，
+      // 所以状态码和 Content-Type 都要看一眼，别把 404 页面当数据解析。
+      if (!res.ok || !/json/i.test(res.headers.get('content-type') || '')) {
+        throw new Error('这个地址没有服务端接口');
+      }
       // 注意顺序：必须先切成在线，再渲染，否则第一次渲染读的还是本地空池子
       Store.online = true;
       applyState(await res.json());
-      setConn('on', '已连接 · 多设备同步');
+      setConn('on', Store.noSse ? '已连服务端（本次不实时刷新）' : '已连接 · 多设备同步');
     } catch (e) {
       Store.online = false;
-      setConn('off', '离线模式');
+      Store.localReason = location.protocol === 'file:' ? 'file' : 'static';
+      setConn('off', '单机模式');
       renderAll();
       return;
     }
-    if (noSse) {
-      setConn('on', '已连接（本次不实时刷新）');
-      return;
-    }
-    const es = new EventSource('/api/stream');
+    if (Store.noSse) return;
+
+    const es = new EventSource('./api/stream');
     es.addEventListener('state', (ev) => {
       try { applyState(JSON.parse(ev.data)); } catch (e) { /* 忽略半包 */ }
     });
@@ -841,9 +855,69 @@
     es.onerror = () => { Store.online = false; setConn('off', '连接断开，正在重连…'); };
   }
 
+  /* ------------------------------------------------- 单机模式说明 + 演示数据 */
+
+  const demoPeople = () => (window.HackathonDemoPeople && window.HackathonDemoPeople.people) || [];
+
+  /**
+   * 把演示参与者塞进本机匹配池。
+   * 静态部署时匹配池默认是空的 —— 打开网站的人只会看到「还没有配对」，
+   * 根本没有东西可试。这个按钮让任何人都能立刻看到完整效果。
+   */
+  function loadDemo() {
+    const demo = demoPeople();
+    if (!demo.length) return toast('演示数据没加载进来', 'err');
+    let added = 0;
+    demo.forEach((p) => {
+      const clean = M.normalizeProfile(p);
+      if (Store.localPool.some((x) => M.norm(x.name) === M.norm(clean.name))) return;
+      clean.id = uid('l');
+      Store.localPool.push(clean);
+      added++;
+    });
+    saveLocal();
+    renderAll();
+    toast(added ? ('已载入 ' + added + ' 个演示参与者，去「破冰匹配」点开始匹配') : '演示参与者都已经在池子里了');
+  }
+
+  function renderNotice() {
+    const box = $('#notice');
+    if (!box) return;
+    if (Store.online || Store.noticeDismissed) { box.hidden = true; return; }
+
+    const why = Store.localReason === 'forced' ? '（?offline=1）'
+      : Store.localReason === 'file' ? '（直接打开的本地文件）' : '（这个地址上没有服务端）';
+    const n = demoPeople().length;
+
+    box.hidden = false;
+    box.innerHTML =
+      '<div class="notice-icon">' + icon('i-users') + '</div>' +
+      '<div class="notice-body">' +
+      '<strong>单机模式' + why + '</strong>' +
+      '<p>名片、下载 PNG、分享链接、配对和倒计时都能正常用，' +
+      '但<b>数据只存在这台设备的浏览器里</b>——换一台手机打开，看不到同一个人。' +
+      '现场那种「多台手机 + 一块大屏同步」的用法需要跑一下服务端：' +
+      '<code>node server.js</code>，README 里有说明。</p>' +
+      '</div>' +
+      '<div class="notice-actions">' +
+      (n ? '<button class="primary js-demo">' + icon('i-users') + '载入 ' + n + ' 个演示参与者</button>' : '') +
+      '<button class="ghost" id="btn-notice-close">知道了</button>' +
+      '</div>';
+
+    const close = $('#btn-notice-close');
+    if (close) {
+      close.addEventListener('click', () => {
+        Store.noticeDismissed = true;
+        lsSet(LS.notice, true);
+        renderNotice();
+      });
+    }
+  }
+
   /* --------------------------------------------------------------- 渲染总入口 */
 
   function renderAll() {
+    renderNotice();
     renderControl();
     renderPool();
     renderWhoami();
@@ -911,6 +985,11 @@
     };
     $('#pairs').addEventListener('click', onPairClick);
     $('#screen-pairs').addEventListener('click', onPairClick);
+
+    // 「载入演示参与者」可能出现在说明条上，也可能出现在空匹配池里，统一委托
+    document.addEventListener('click', (e) => {
+      if (e.target.closest('.js-demo')) loadDemo();
+    });
 
     $('#btn-fullscreen').addEventListener('click', () => {
       if (document.fullscreenElement) document.exitFullscreen();
